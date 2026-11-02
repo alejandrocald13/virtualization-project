@@ -1,0 +1,2 @@
+kubelet-arg:
+  - "system-reserved=memory=200Mi"

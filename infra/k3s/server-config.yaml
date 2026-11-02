@@ -1,0 +1,12 @@
+node-ip: 10.10.10.11
+tls-san:
+  - 10.10.10.11
+  - k3s-cp-01
+write-kubeconfig-mode: "0644"
+disable:
+  - traefik
+  - servicelb
+  - local-storage
+  - metrics-server
+node-taint:
+  - node-role.kubernetes.io/control-plane=true:NoSchedule
