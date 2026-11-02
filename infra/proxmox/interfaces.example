@@ -1,0 +1,25 @@
+auto lo
+iface lo inet loopback
+
+iface nic0 inet manual
+
+auto wlp3s0
+iface wlp3s0 inet dhcp
+    wpa-ssid kubelab-grupo6
+auto wlp3s0
+iface wlp3s0 inet dhcp
+    wpa-ssid kubelab-grupo6
+    wpa-psk <HOTSPOT_PSK_HEX>
+    post-up iw dev wlp3s0 set power_save off
+
+auto vmbr0
+iface vmbr0 inet static
+    address 10.10.10.1/24
+    bridge-ports none
+    bridge-stp off
+    bridge-fd 0
+    post-up   echo 1 > /proc/sys/net/ipv4/ip_forward
+    post-up   iptables -t nat -A POSTROUTING -s 10.10.10.0/24 -o wlp3s0 -j MASQUERADE
+    post-down iptables -t nat -D POSTROUTING -s 10.10.10.0/24 -o wlp3s0 -j MASQUERADE
+    post-up   iptables -t nat -A PREROUTING -i wlp3s0 -m addrtype --dst-type LOCAL -p tcp -m multiport --dports 80,5432 -j DNAT --to-destination 10.10.10.200
+    post-down iptables -t nat -D PREROUTING -i wlp3s0 -m addrtype --dst-type LOCAL -p tcp -m multiport --dports 80,5432 -j DNAT --to-destination 10.10.10.200
