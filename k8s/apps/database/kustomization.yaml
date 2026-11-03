@@ -1,0 +1,13 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: kubelab
+resources:
+  - services.yaml
+  - statefulset.yaml
+  - init-job.yaml
+  - ingressroutetcp.yaml
+configMapGenerator:
+  - name: db-migrations
+    files:
+      - migrations/001_create_products.sql
+      - migrations/002_readonly_role.sql
