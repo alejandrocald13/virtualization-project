@@ -1,0 +1,19 @@
+apiVersion: secrets.doppler.com/v1alpha1
+kind: DopplerSecret
+metadata:
+  name: postgres-credentials
+  namespace: doppler-operator-system
+spec:
+  tokenSecret:
+    name: doppler-token-secret
+  managedSecret:
+    name: postgres-credentials
+    namespace: kubelab
+    type: Opaque
+  secrets:
+    - POSTGRES_DB
+    - POSTGRES_USER
+    - POSTGRES_PASSWORD
+    - DB_READONLY_USER
+    - DB_READONLY_PASSWORD
+  resyncSeconds: 60

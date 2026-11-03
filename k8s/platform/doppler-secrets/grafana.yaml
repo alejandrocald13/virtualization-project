@@ -1,0 +1,18 @@
+apiVersion: secrets.doppler.com/v1alpha1
+kind: DopplerSecret
+metadata:
+  name: grafana-credentials
+  namespace: doppler-operator-system
+spec:
+  tokenSecret:
+    name: doppler-token-secret
+  managedSecret:
+    name: grafana-credentials
+    namespace: monitoring
+    type: Opaque
+  secrets:
+    - GRAFANA_ADMIN_USER
+    - GRAFANA_ADMIN_PASSWORD
+    - GRAFANA_VIEWER_USER
+    - GRAFANA_VIEWER_PASSWORD
+  resyncSeconds: 60

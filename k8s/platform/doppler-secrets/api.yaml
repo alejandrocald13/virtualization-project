@@ -1,0 +1,15 @@
+apiVersion: secrets.doppler.com/v1alpha1
+kind: DopplerSecret
+metadata:
+  name: api-credentials
+  namespace: doppler-operator-system
+spec:
+  tokenSecret:
+    name: doppler-token-secret
+  managedSecret:
+    name: api-credentials
+    namespace: kubelab
+    type: Opaque
+  secrets:
+    - DATABASE_URL
+  resyncSeconds: 60
