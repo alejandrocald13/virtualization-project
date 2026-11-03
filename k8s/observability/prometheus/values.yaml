@@ -24,6 +24,15 @@ scrapeConfigs:
     enabled: false
   kubernetes-services:
     enabled: false
+  # In k3s every component runs in one process, so the control plane kubelet
+  # endpoint repeats all API server metrics. Both are dropped to save memory.
+  kubernetes-api-servers:
+    enabled: false
+  kubernetes-nodes:
+    metric_relabel_configs:
+      - source_labels: [__name__]
+        regex: kubelet_.*|process_.*|go_goroutines
+        action: keep
 
 alertmanager:
   enabled: false
