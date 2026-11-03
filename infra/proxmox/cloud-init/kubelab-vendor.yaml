@@ -1,0 +1,8 @@
+#cloud-config
+timezone: America/Guatemala
+package_update: true
+packages:
+  - qemu-guest-agent
+  - nfs-common
+runcmd:
+  - systemctl enable --now qemu-guest-agent
