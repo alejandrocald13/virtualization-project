@@ -7,15 +7,7 @@ Final group project for the Virtualization course: Proxmox VE on a physical mach
 - **Group:** 6
 - **Domain:** `grupo6.lab`
 - **Traefik load balancer IP:** `10.10.10.200`
-- **Repository:** `https://github.com/<owner>/kubelab` (public), branch `main`
-
-| Member | Name | Responsibilities | Branches |
-|---|---|---|---|
-| L | `<full name>` | Proxmox, hotspot network, VMs, k3s, NFS server (sections 6, 7, 8) | `feat/infra-proxmox`, `feat/infra-k3s` |
-| V | `<full name>` | API and web code, application manifests (section 9) | `feat/api`, `feat/web`, `feat/k8s-apps` |
-| P | `<full name>` | CI pipelines, Argo CD, Doppler, read-only users (sections 10, 11, 16) | `ci/pipelines`, `feat/argocd`, `feat/doppler` |
-| R | `<full name>` | Platform, observability, teacher access (sections 12, 13, 16) | `feat/platform`, `feat/observability`, `docs/access` |
-| All | - | Evidence, README, defense (sections 15, 17) | `docs/*` |
+- **Repository:** `https://github.com/alejandrocald13/virtualization-project` (public), branch `main`
 
 | Domain | Service |
 |---|---|
@@ -2104,7 +2096,3 @@ Argo CD recreates the IngressRoute.
 Commands in section 14.3.
 
 ![Pod deletion with continuous traffic](docs/pod-deletion.png)
-
-## 18. AI Usage
-
-Declared in [docs/ia.md](docs/ia.md).
