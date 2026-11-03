@@ -1,0 +1,13 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: argocd
+resources:
+  - namespace.yaml
+  - install.yaml
+patches:
+  - path: argocd-cmd-params-cm.yaml
+  - path: argocd-cm.yaml
+  - path: argocd-rbac-cm.yaml
+  - path: disable-dex-server.yaml
+  - path: disable-notifications-controller.yaml
+  - path: disable-applicationset-controller.yaml

@@ -1,0 +1,29 @@
+apiVersion: secrets.doppler.com/v1alpha1
+kind: DopplerSecret
+metadata:
+  name: argocd-repo
+  namespace: doppler-operator-system
+spec:
+  tokenSecret:
+    name: doppler-token-secret
+  managedSecret:
+    name: kubelab-repo
+    namespace: argocd
+    type: Opaque
+    labels:
+      argocd.argoproj.io/secret-type: repository
+  secrets:
+    - ARGOCD_REPO_TYPE
+    - ARGOCD_REPO_URL
+    - ARGOCD_REPO_USERNAME
+    - ARGOCD_REPO_PASSWORD
+  processors:
+    ARGOCD_REPO_TYPE:
+      asName: type
+    ARGOCD_REPO_URL:
+      asName: url
+    ARGOCD_REPO_USERNAME:
+      asName: username
+    ARGOCD_REPO_PASSWORD:
+      asName: password
+  resyncSeconds: 60
