@@ -6,3 +6,4 @@ packages:
   - nfs-common
 runcmd:
   - systemctl enable --now qemu-guest-agent
+  - systemctl mask --now fwupd.service fwupd-refresh.timer multipathd.service multipathd.socket ModemManager.service udisks2.service unattended-upgrades.service apt-daily.timer apt-daily-upgrade.timer
