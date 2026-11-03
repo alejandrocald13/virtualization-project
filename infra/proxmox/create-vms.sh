@@ -13,7 +13,7 @@ create_vm() {
   qm start "$vm_id"
 }
 
-create_vm 101 k3s-cp-01     10.10.10.11 2 1280 25G
-create_vm 111 k3s-worker-01 10.10.10.21 2 1152 40G
-create_vm 112 k3s-worker-02 10.10.10.22 2 1152 40G
-create_vm 113 k3s-worker-03 10.10.10.23 2 1152 40G
+create_vm 101 k3s-cp-01     10.10.10.11 2 4096 25G
+create_vm 111 k3s-worker-01 10.10.10.21 3 4096 40G
+create_vm 112 k3s-worker-02 10.10.10.22 3 4096 40G
+create_vm 113 k3s-worker-03 10.10.10.23 3 4096 40G
