@@ -1,0 +1,23 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: web
+  namespace: argocd
+  annotations:
+    # After the api: nginx resolves the api Service name when it starts.
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/alejandrocald13/virtualization-project.git
+    targetRevision: main
+    path: k8s/apps/web
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: kubelab
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true
