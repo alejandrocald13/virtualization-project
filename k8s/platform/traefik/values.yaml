@@ -1,0 +1,35 @@
+deployment:
+  replicas: 2
+service:
+  type: LoadBalancer
+  annotations:
+    metallb.io/loadBalancerIPs: 10.96.252.240
+ports:
+  web:
+    port: 8000
+    exposedPort: 80
+  websecure:
+    expose:
+      default: false
+  postgres:
+    port: 5432
+    exposedPort: 5432
+    protocol: TCP
+    expose:
+      default: true
+providers:
+  kubernetesCRD:
+    enabled: true
+  kubernetesIngress:
+    enabled: false
+accessLog:
+  enabled: true
+ingressRoute:
+  dashboard:
+    enabled: false
+resources:
+  requests:
+    cpu: 100m
+    memory: 64Mi
+  limits:
+    memory: 128Mi
