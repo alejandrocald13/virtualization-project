@@ -1,0 +1,78 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: grafana-viewer-user
+  namespace: monitoring
+  annotations:
+    argocd.argoproj.io/hook: PostSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+spec:
+  backoffLimit: 4
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: create-viewer
+          image: curlimages/curl:8.23.0
+          command:
+            - sh
+            - -c
+            - |
+              set -eu
+              GRAFANA=http://grafana.monitoring.svc.cluster.local
+              until curl -sf "$GRAFANA/api/health" > /dev/null; do sleep 3; done
+
+              status=$(curl -s -o /tmp/response -w '%{http_code}' \
+                -u "$ADMIN_USER:$ADMIN_PASSWORD" \
+                -H 'Content-Type: application/json' \
+                -X POST "$GRAFANA/api/admin/users" \
+                -d "{\"name\":\"$VIEWER_USER\",\"login\":\"$VIEWER_USER\",\"password\":\"$VIEWER_PASSWORD\"}")
+
+              case "$status" in
+                200)
+                  echo "Viewer user created"
+                  ;;
+                412)
+                  # The user already exists: keep its password in sync with Doppler.
+                  user_id=$(curl -sf -u "$ADMIN_USER:$ADMIN_PASSWORD" \
+                    "$GRAFANA/api/users/lookup?loginOrEmail=$VIEWER_USER" \
+                    | sed -n 's/^{"id":\([0-9]*\).*/\1/p')
+                  curl -sf -u "$ADMIN_USER:$ADMIN_PASSWORD" \
+                    -H 'Content-Type: application/json' \
+                    -X PUT "$GRAFANA/api/admin/users/$user_id/password" \
+                    -d "{\"password\":\"$VIEWER_PASSWORD\"}" > /dev/null
+                  echo "Viewer user already exists, password updated"
+                  ;;
+                *)
+                  echo "Unexpected response $status"
+                  cat /tmp/response
+                  exit 1
+                  ;;
+              esac
+          env:
+            - name: ADMIN_USER
+              valueFrom:
+                secretKeyRef:
+                  name: grafana-credentials
+                  key: GRAFANA_ADMIN_USER
+            - name: ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: grafana-credentials
+                  key: GRAFANA_ADMIN_PASSWORD
+            - name: VIEWER_USER
+              valueFrom:
+                secretKeyRef:
+                  name: grafana-credentials
+                  key: GRAFANA_VIEWER_USER
+            - name: VIEWER_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: grafana-credentials
+                  key: GRAFANA_VIEWER_PASSWORD
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              memory: 32Mi

@@ -1,0 +1,82 @@
+admin:
+  existingSecret: grafana-credentials
+  userKey: GRAFANA_ADMIN_USER
+  passwordKey: GRAFANA_ADMIN_PASSWORD
+
+testFramework:
+  enabled: false
+
+# One pod at a time: less memory and no two pods writing the same SQLite file.
+deploymentStrategy:
+  type: Recreate
+
+grafana.ini:
+  analytics:
+    check_for_updates: false
+    reporting_enabled: false
+  server:
+    root_url: http://grafana.grupo6.lab
+  users:
+    auto_assign_org_role: Viewer
+
+persistence:
+  enabled: true
+  size: 1Gi
+
+# Same rule as Loki: stay away from the nodes running Prometheus and the
+# Argo CD application controller, the two heaviest pods of the cluster.
+affinity:
+  podAntiAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 100
+        podAffinityTerm:
+          topologyKey: kubernetes.io/hostname
+          namespaceSelector: {}
+          labelSelector:
+            matchExpressions:
+              - key: app.kubernetes.io/name
+                operator: In
+                values:
+                  - prometheus
+                  - argocd-application-controller
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 96Mi
+  limits:
+    memory: 256Mi
+
+datasources:
+  datasources.yaml:
+    apiVersion: 1
+    datasources:
+      - name: Prometheus
+        type: prometheus
+        uid: prometheus
+        access: proxy
+        url: http://prometheus-server.monitoring.svc.cluster.local
+        isDefault: true
+        editable: false
+      - name: Loki
+        type: loki
+        uid: loki
+        access: proxy
+        url: http://loki.monitoring.svc.cluster.local:3100
+        editable: false
+
+dashboardProviders:
+  dashboardproviders.yaml:
+    apiVersion: 1
+    providers:
+      - name: kubelab
+        orgId: 1
+        folder: KubeLab
+        type: file
+        disableDeletion: true
+        editable: false
+        options:
+          path: /var/lib/grafana/dashboards/kubelab
+
+dashboardsConfigMaps:
+  kubelab: grafana-dashboards

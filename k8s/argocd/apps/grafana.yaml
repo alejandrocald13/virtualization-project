@@ -1,0 +1,32 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: grafana
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  project: default
+  sources:
+    - repoURL: https://grafana-community.github.io/helm-charts
+      chart: grafana
+      targetRevision: 13.7.0
+      helm:
+        releaseName: grafana
+        valueFiles:
+          - $values/k8s/observability/grafana/values.yaml
+    - repoURL: https://github.com/alejandrocald13/virtualization-project.git
+      targetRevision: main
+      ref: values
+    - repoURL: https://github.com/alejandrocald13/virtualization-project.git
+      targetRevision: main
+      path: k8s/observability/grafana/manifests
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: monitoring
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true
