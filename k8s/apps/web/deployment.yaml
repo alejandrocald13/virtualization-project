@@ -28,8 +28,10 @@ spec:
           labelSelector:
             matchLabels:
               app: web
+      # nginx-unprivileged runs as uid 101; stated explicitly so runAsNonRoot can be verified.
       securityContext:
         runAsNonRoot: true
+        runAsUser: 101
       containers:
         - name: web
           image: docker.io/alejandrocald13/kubelab-web

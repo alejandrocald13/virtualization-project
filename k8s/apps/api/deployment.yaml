@@ -35,8 +35,11 @@ spec:
           labelSelector:
             matchLabels:
               app: api
+      # The image declares USER node by name; the kubelet can only verify
+      # runAsNonRoot with a numeric id (node is uid 1000 in the official image).
       securityContext:
         runAsNonRoot: true
+        runAsUser: 1000
       containers:
         - name: api
           image: docker.io/alejandrocald13/kubelab-api
