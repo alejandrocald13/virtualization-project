@@ -5,19 +5,20 @@ configmapReload:
         cpu: 5m
         memory: 16Mi
       limits:
-        memory: 32Mi
+        memory: 64Mi
 
 server:
-  retention: "1d"
+  # About 170 MB of TSDB per day: 7 days fit in the 4Gi volume.
+  retention: "7d"
   persistentVolume:
     enabled: true
     size: 4Gi
   resources:
     requests:
       cpu: 50m
-      memory: 128Mi
+      memory: 256Mi
     limits:
-      memory: 512Mi
+      memory: 1Gi
 
 scrapeConfigs:
   prometheus-pushgateway:

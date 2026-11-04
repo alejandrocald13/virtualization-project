@@ -16,7 +16,7 @@ loki:
           prefix: loki_index_
           period: 24h
   limits_config:
-    retention_period: 48h
+    retention_period: 168h
   compactor:
     retention_enabled: true
     delete_request_store: filesystem
@@ -45,9 +45,9 @@ singleBinary:
   resources:
     requests:
       cpu: 50m
-      memory: 128Mi
+      memory: 256Mi
     limits:
-      memory: 384Mi
+      memory: 1Gi
 
 gateway:
   enabled: false

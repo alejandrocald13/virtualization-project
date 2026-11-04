@@ -27,9 +27,10 @@ accessLog:
 ingressRoute:
   dashboard:
     enabled: false
+# The k6 load test took the working set to the old 128Mi limit.
 resources:
   requests:
     cpu: 100m
-    memory: 64Mi
-  limits:
     memory: 128Mi
+  limits:
+    memory: 512Mi
