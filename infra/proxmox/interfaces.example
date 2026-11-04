@@ -1,13 +1,14 @@
 auto lo
 iface lo inet loopback
 
-auto nic0
-iface nic0 inet static
-    address 192.168.0.251/24
-    gateway 192.168.0.1
-    post-up sysctl -w net.ipv4.conf.nic0.proxy_arp=1
+iface nic0 inet manual
 
-iface wlo1 inet manual
+auto wlo1
+iface wlo1 inet dhcp
+    wpa-ssid kubelab-grupo6
+    wpa-psk <HOTSPOT_PSK_HEX>
+    post-up sysctl -w net.ipv4.conf.wlo1.proxy_arp=1
+    post-up iw dev wlo1 set power_save off
 
 auto vmbr0
 iface vmbr0 inet static
@@ -15,9 +16,9 @@ iface vmbr0 inet static
     bridge-ports none
     bridge-stp off
     bridge-fd 0
-    post-up   ip route replace 192.168.0.240/30 dev vmbr0
+    post-up   ip route replace 10.60.129.240/30 dev vmbr0
     post-up   echo 1 > /proc/sys/net/ipv4/ip_forward
-    post-up   iptables -t nat -A POSTROUTING -s 10.10.10.0/24 -o nic0 -j MASQUERADE
-    post-down iptables -t nat -D POSTROUTING -s 10.10.10.0/24 -o nic0 -j MASQUERADE
+    post-up   iptables -t nat -A POSTROUTING -s 10.10.10.0/24 -o wlo1 -j MASQUERADE
+    post-down iptables -t nat -D POSTROUTING -s 10.10.10.0/24 -o wlo1 -j MASQUERADE
 
 source /etc/network/interfaces.d/*

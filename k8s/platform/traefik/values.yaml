@@ -3,7 +3,7 @@ deployment:
 service:
   type: LoadBalancer
   annotations:
-    metallb.io/loadBalancerIPs: 192.168.0.240
+    metallb.io/loadBalancerIPs: 10.60.129.240
 ports:
   web:
     port: 8000
