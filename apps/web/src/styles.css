@@ -87,7 +87,7 @@ button {
   padding: 8px 14px;
   border-radius: 6px;
   border: 1px solid var(--color-primary);
-  background: yellow;
+  background: var(--color-primary);
   color: #ffffff;
   cursor: pointer;
 }
