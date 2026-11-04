@@ -1,0 +1,8 @@
+# Grupo 6 - KubeLab
+# Join the WiFi kubelab-grupo6 first. No routes or VPN needed (see docs/access.md)
+10.60.129.240 app.grupo6.lab
+10.60.129.240 api.grupo6.lab
+10.60.129.240 db.grupo6.lab
+10.60.129.240 grafana.grupo6.lab
+10.60.129.240 prometheus.grupo6.lab
+10.60.129.240 argocd.grupo6.lab

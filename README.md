@@ -1,275 +1,243 @@
 # KubeLab - Kubernetes on Proxmox with GitOps
 
-## 1. Overview
+Final group project for the Virtualization course (group 6). A physical machine runs Proxmox VE, Proxmox runs 4 VMs with k3s, and the cluster runs the platform (MetalLB, Traefik, NFS storage, metrics-server, Doppler Operator), the applications (API, web and PostgreSQL) and the observability stack (Prometheus, Loki, Promtail, Grafana). Everything after the cluster bootstrap is deployed by Argo CD from this monorepo.
 
-Final group project for the Virtualization course: Proxmox VE on a physical machine, 4 VMs running k3s, and a full platform (MetalLB, Traefik, NFS storage, API + web + PostgreSQL, Prometheus, Loki, Promtail, Grafana, HPA, GitHub Actions, Argo CD app of apps and Doppler) managed from this monorepo.
-
-- **Group:** 6
-- **Domain:** `grupo6.lab`
-- **Traefik load balancer IP:** `10.10.10.200`
-- **Repository:** `https://github.com/alejandrocald13/virtualization-project` (public), branch `main`
-
-| Domain | Service |
+| Item | Value |
 |---|---|
-| `app.grupo6.lab` | Web (React + nginx) |
-| `api.grupo6.lab` | API (Node.js + Express) |
-| `db.grupo6.lab` | PostgreSQL (TCP 5432) |
-| `grafana.grupo6.lab` | Grafana |
-| `prometheus.grupo6.lab` | Prometheus |
-| `argocd.grupo6.lab` | Argo CD |
+| Group | 6 |
+| Domain | `grupo6.lab` |
+| Traefik LoadBalancer IP | `10.60.129.240` |
+| Network | Group hotspot, SSID `kubelab-grupo6`, subnet `10.60.129.0/24` |
+| Repository | `https://github.com/alejandrocald13/virtualization-project` (private, teacher added as collaborator), branch `main` |
+| Teacher guide | [docs/access.md](docs/access.md) and [docs/hosts.txt](docs/hosts.txt) |
+| AI usage | [docs/ia.md](docs/ia.md) |
 
-## 2. Architecture
+## Contents
 
-### 2.1 Diagram
+1. [Architecture](#1-architecture)
+2. [Environment and Versions](#2-environment-and-versions)
+3. [Node Inventory and Network](#3-node-inventory-and-network)
+4. [Repository Structure](#4-repository-structure)
+5. [Rebuild from Scratch](#5-rebuild-from-scratch)
+6. [Platform](#6-platform)
+7. [Applications](#7-applications)
+8. [CI/CD and GitOps](#8-cicd-and-gitops)
+9. [Secrets with Doppler](#9-secrets-with-doppler)
+10. [Observability](#10-observability)
+11. [High Availability, Scaling and Persistence](#11-high-availability-scaling-and-persistence)
+12. [URL Table](#12-url-table)
+13. [Teacher Access](#13-teacher-access)
+14. [Design Decisions and Known Limitations](#14-design-decisions-and-known-limitations)
+15. [Evidence](#15-evidence)
+
+## 1. Architecture
+
+### 1.1 Network and Cluster
 
 ```
-                              Internet
-                                 ^
-                                 | mobile data
-                  +--------------+---------------+
-                  | Android phone hotspot        |
-                  | SSID kubelab-grupo6 (WPA2)   |
-                  | variable subnet (DHCP)       |
-                  +-------+---------------+------+
-                          | WiFi          | WiFi
-                          |               |
-+-------------------------+--+   +--------+-------------------------------------+
-| Teacher / team laptop      |   | Proxmox VE 9.2 (pve.grupo6.lab)              |
-| hosts: *.grupo6.lab ->     |   |   <wifi_iface>  <IP_WIFI_PROXMOX> (DHCP)     |
-|   <IP_WIFI_PROXMOX>        +-->|        |  DNAT in: 80, 5432 -> 10.10.10.200  |
-| team only: SSH ProxyJump   |   |        |  NAT out: MASQUERADE                |
-|   through the Proxmox host |   |   vmbr0 10.10.10.1/24 (bridge-ports none)    |
-|                            |   |   NFS server /srv/nfs/kubelab                |
-+----------------------------+   +--------+-------------------------------------+
-                                          | 10.10.10.0/24 (no DHCP)
-        +------------------+--------------+---+------------------+
-        |                  |                  |                  |
-  +-----+--------+   +-----+--------+   +-----+--------+   +-----+--------+
-  | k3s-cp-01    |   | k3s-worker-01|   | k3s-worker-02|   | k3s-worker-03|
-  | 10.10.10.11  |   | 10.10.10.21  |   | 10.10.10.22  |   | 10.10.10.23  |
-  | NoSchedule   |   |              |   |              |   |              |
-  +--------------+   +--------------+   +--------------+   +--------------+
-                                 |
-               MetalLB L2 (pool 10.10.10.200-10.10.10.220)
-                                 |
-               Traefik LoadBalancer 10.10.10.200 (:80 web, :5432 postgres)
-                                 |
-   +-----------------------------+------------------------------------------------+
-   | IngressRoute    app.grupo6.lab         -> web:8080              (kubelab)    |
-   | IngressRoute    api.grupo6.lab         -> api:3000              (kubelab)    |
-   | IngressRouteTCP db.grupo6.lab:5432     -> postgres:5432         (kubelab)    |
-   | IngressRoute    grafana.grupo6.lab     -> grafana:80            (monitoring) |
-   | IngressRoute    prometheus.grupo6.lab  -> prometheus-server:80  (monitoring) |
-   | IngressRoute    argocd.grupo6.lab      -> argocd-server:80      (argocd)     |
-   +------------------------------------------------------------------------------+
-
-Outside the cluster:
-
-  developer laptop --PR / merge--> GitHub <owner>/kubelab (main)
-                                          |
-                                          v
-                     GitHub Actions: test (Doppler config ci), build, push
-                          |                                   |
-                          v                                   v
-  GHCR ghcr.io/<owner>/kubelab-{api,web}:<short-sha>   commit "ci(...): deploy image <short-sha>" to main
-
-  Argo CD (in cluster)  --pulls main every 60s-->  GitHub <owner>/kubelab
-  k3s nodes             --pull images----------->  GHCR
-
-  Doppler project kubelab:
-    config ci  --> GitHub Actions (dopplerhq/secrets-fetch-action)
-    config prd --> Doppler Operator (in cluster) --> Kubernetes Secrets
+ Teacher / team laptop   (hosts file: *.grupo6.lab -> 10.60.129.240)
+        |
+        |  WiFi "kubelab-grupo6"  10.60.129.0/24  (gateway = phone 10.60.129.208)
+        v
+ +-------------------------------------------------------------------------+
+ | Proxmox VE 9.2  (pve.kubelab.lan)                                       |
+ |   wlo1  10.60.129.229 (DHCP)                                            |
+ |     - proxy ARP: answers ARP for 10.60.129.240-243 with its own MAC     |
+ |     - route 10.60.129.240/30 -> vmbr0                                   |
+ |     - MASQUERADE 10.10.10.0/24 -> wlo1 (internet for the VMs)           |
+ |   NFS server  /srv/nfs/kubelab  (thin LV, 100 GB) -> 10.10.10.0/24      |
+ |                                                                         |
+ |   vmbr0  10.10.10.1/24  (internal bridge, no physical port, no DHCP)    |
+ |     |               |                 |                 |               |
+ |   VM 101          VM 111            VM 112            VM 113            |
+ |   k3s-cp-01       k3s-worker-01     k3s-worker-02     k3s-worker-03     |
+ |   10.10.10.11     10.10.10.21       10.10.10.22       10.10.10.23       |
+ |   NoSchedule                                                            |
+ +-------------------------------------------------------------------------+
+        |
+        v  MetalLB L2: a speaker on a worker announces 10.60.129.240 on vmbr0
+ Traefik (Service LoadBalancer 10.60.129.240, 2 replicas)
+   :80   IngressRoute by Host()            :5432 IngressRouteTCP
+   |-- app.grupo6.lab        -> web:8080 (nginx) --/api/--> api:3000
+   |-- api.grupo6.lab        -> api:3000 --> postgres:5432
+   |-- grafana.grupo6.lab    -> grafana:80
+   |-- prometheus.grupo6.lab -> prometheus-server:80
+   |-- argocd.grupo6.lab     -> argocd-server:80
+   '-- db.grupo6.lab:5432    -> postgres:5432
+ PersistentVolumeClaims (StorageClass nfs-client) -> NFS on the Proxmox host
 ```
 
-### 2.2 Environment
+### 1.2 Delivery and Secrets
 
-| Component | Version / Value |
+```
+ Member --push / merge PR--> GitHub (main)
+                               |  changes in apps/api/** or apps/web/**
+                               v
+                     GitHub Actions (api.yml / web.yml)
+                       1. Doppler config "dev" -> test credentials and Docker Hub token
+                       2. tests (the API runs them against a real PostgreSQL)
+                       3. build and push docker.io/alejandrocald13/kubelab-<app>:<short-sha>
+                       4. kustomize edit set image + commit "ci(<app>): deploy image <short-sha>"
+                               |
+                               v
+ Argo CD (in the cluster) --reads main every 60 s--> root (app of apps) -> 18 Applications
+        ^                                             automated sync, prune, selfHeal
+        | repository credential (Secret kubelab-repo)
+ Doppler Operator <-- Doppler config "prd" (service token: the only manual Secret)
+        |
+        '--> Kubernetes Secrets: postgres-credentials, api-credentials, grafana-credentials
+```
+
+## 2. Environment and Versions
+
+| Component | Version / value |
 |---|---|
-| Hardware | 1 physical machine, 6 GB RAM (5.7 GiB usable), 4 vCPU, 465 GB disk |
-| Hypervisor | Proxmox VE 9.2 (ISO `proxmox-ve_9.2-1.iso`), repository `pve-no-subscription` (Debian trixie) |
-| VM template | Ubuntu 24.04 cloud image `release-20261017` |
-| Kubernetes | k3s `v1.36.5+k3s1` (without bundled traefik, servicelb, local-storage, metrics-server) |
-| Argo CD | v3.5.6 (`install.yaml`, namespace `argocd`) |
-| MetalLB | chart `metallb/metallb` 0.16.1 (L2, `frrk8s.enabled: false`) |
-| Traefik | chart `traefik/traefik` 41.7.1 (Traefik v3.7.14) |
-| NFS provisioner | chart `nfs-subdir-external-provisioner` 4.0.18 (image v4.0.2), StorageClass `nfs-client` (default) |
-| metrics-server | chart 3.14.0 (v0.9.0) |
-| Doppler Operator | chart `doppler/doppler-kubernetes-operator` 1.7.5 |
-| Prometheus | chart `prometheus-community/prometheus` 29.37.0 |
-| Loki | chart `grafana-community/loki` 18.15.1 (Monolithic) |
-| Promtail | chart `grafana/promtail` 6.17.1 (image `grafana/promtail:3.6.11`) |
+| Physical host | Laptop, Intel Core i5-11400H (12 threads, VT-x), 24 GB RAM, 1 TB NVMe for Proxmox |
+| Hypervisor | Proxmox VE 9.2 (`pve-manager` 9.2.25, kernel 7.0.14), repository `pve-no-subscription` |
+| VM image | Ubuntu 24.04 cloud image `release-20261017` (SHA256 checked) |
+| Kubernetes | k3s `v1.36.5+k3s1` (bundled Traefik, ServiceLB, local-storage and metrics-server disabled) |
+| Argo CD | v3.5.6 (`install.yaml` pinned, installed with Kustomize) |
+| MetalLB | chart `metallb/metallb` 0.16.1, L2 mode |
+| Traefik | chart `traefik/traefik` 41.7.1 (Traefik v3.7.14) and `traefik/traefik-crds` 1.18.0 |
+| NFS provisioner | chart `nfs-subdir-external-provisioner` 4.0.18 |
+| metrics-server | chart 3.14.0 |
+| Doppler Operator | chart `doppler-kubernetes-operator` 1.7.5 |
+| Prometheus | chart `prometheus-community/prometheus` 29.37.0 (with kube-state-metrics and node-exporter) |
+| Loki | chart `grafana-community/loki` 18.15.1 (monolithic) |
+| Promtail | chart `grafana/promtail` 6.17.1 (image 3.6.11) |
 | Grafana | chart `grafana-community/grafana` 13.7.0 |
-| Base images | `node:24.22.2-alpine`, `nginxinc/nginx-unprivileged:1.30.6-alpine`, `postgres:17.11-alpine` |
-| API dependencies | `express@5`, `pg@8`, `prom-client@15`, dev `supertest` |
-| Web | React (Vite), dev `vitest` |
+| Database | `postgres:17.11-alpine` |
+| API | Node.js 24, Express 5.3.0, pg 8.23.1, prom-client 15.1.3 |
+| Web | React 19.3.1, Vite 8.3.5, served by `nginx-unprivileged:1.30.6-alpine` |
 | Package manager | pnpm 12.16.1 |
-| Registry | GHCR `ghcr.io/<owner>/kubelab-api`, `ghcr.io/<owner>/kubelab-web` (public), tag = 7-char commit SHA |
-| CI actions | `actions/checkout@v7`, `actions/setup-node@v7`, `pnpm/action-setup@v6`, `docker/login-action@v4`, `docker/setup-buildx-action@v4`, `docker/build-push-action@v7`, `dopplerhq/secrets-fetch-action@v2.0.0` |
-| Secrets | Doppler project `kubelab`, configs `prd` (cluster) and `ci` (pipeline) |
+| Registry | Docker Hub, public repositories `alejandrocald13/kubelab-api` and `alejandrocald13/kubelab-web` |
 | Load test | k6 1.8.2 (`grafana/k6:1.8.2`) |
-| Helm (validation only) | v4.3.1 |
-
-Namespaces: `argocd`, `metallb-system`, `traefik`, `nfs-provisioner`, `doppler-operator-system`, `kube-system` (metrics-server), `monitoring`, `kubelab` (api, web, postgres).
 
 ## 3. Node Inventory and Network
 
+### 3.1 Nodes
+
 | VM ID | Name | IP | vCPU | RAM | Disk | Role |
 |---|---|---|---|---|---|---|
-| 9000 | ubuntu-2404-template | - | 2 | 2048 MB | 3.5 GB | template |
-| 101 | k3s-cp-01 | 10.10.10.11 | 2 | 1280 MB | 25 GB | control plane (taint) |
-| 111 | k3s-worker-01 | 10.10.10.21 | 2 | 1152 MB | 40 GB | worker |
-| 112 | k3s-worker-02 | 10.10.10.22 | 2 | 1152 MB | 40 GB | worker |
-| 113 | k3s-worker-03 | 10.10.10.23 | 2 | 1152 MB | 40 GB | worker |
+| 9000 | `ubuntu-2404-template` | - | 2 | 2048 MB | 3.5 GB | cloud-init template |
+| 101 | `k3s-cp-01` | `10.10.10.11` | 2 | 4096 MB | 25 GB | control plane (taint `NoSchedule`) |
+| 111 | `k3s-worker-01` | `10.10.10.21` | 3 | 4096 MB | 40 GB | worker |
+| 112 | `k3s-worker-02` | `10.10.10.22` | 3 | 4096 MB | 40 GB | worker |
+| 113 | `k3s-worker-03` | `10.10.10.23` | 3 | 4096 MB | 40 GB | worker |
 
-| Network item | Value |
+All VMs: CPU type `host`, VirtIO network on `vmbr0`, QEMU guest agent, `onboot: 1`, balloon equal to memory (the guest reports its memory to Proxmox, but Proxmox never takes RAM away).
+
+### 3.2 Network
+
+| Item | Value |
 |---|---|
-| Hotspot | Android, SSID `kubelab-grupo6` (WPA2), variable subnet |
-| Proxmox WiFi | `<wifi_iface>`, DHCP from the hotspot (`<IP_WIFI_PROXMOX>`) |
-| Cluster subnet | `10.10.10.0/24` on `vmbr0` (internal bridge, no DHCP) |
-| Gateway | `10.10.10.1` (Proxmox host, NAT to the WiFi) |
-| Published services | DNAT on the Proxmox WiFi address: ports 80 and 5432 are forwarded to Traefik (`10.10.10.200`) |
-| DNS | `1.1.1.1 8.8.8.8` |
-| Node IPs | `10.10.10.11`, `10.10.10.21-23` (static, cloud-init) |
-| MetalLB pool | `10.10.10.200-10.10.10.220` (reserved, `autoAssign: false`) |
-| Traefik | `10.10.10.200` |
+| Hotspot | Android phone, SSID `kubelab-grupo6` (WPA2), subnet `10.60.129.0/24`, gateway `10.60.129.208` |
+| Proxmox host | `wlo1`, `10.60.129.229` by DHCP from the hotspot |
+| Cluster network | `10.10.10.0/24` on `vmbr0` (internal bridge, static IPs by cloud-init) |
+| VM gateway | `10.10.10.1` (Proxmox host, MASQUERADE to the WiFi) |
+| VM DNS | `1.1.1.1 8.8.8.8` |
+| **MetalLB pool (INF-06)** | `10.60.129.240-10.60.129.243`, `autoAssign: false`, reserved inside the hotspot subnet and answered by the host with proxy ARP |
+| Traefik | `10.60.129.240` |
 | NFS server | `10.10.10.1:/srv/nfs/kubelab` |
 
-![Proxmox web UI](docs/proxmox-web-ui.png)
-
-![Proxmox VMs](docs/proxmox-vms.png)
-
-![VM hardware and Cloud-Init](docs/proxmox-vm-hardware.png)
+**Why a routed network with proxy ARP.** A WiFi interface in client mode cannot be part of a Linux bridge: the access point drops frames whose source MAC is not the associated client. So the VMs live on an internal bridge and the host routes. For the MetalLB IPs, the host answers ARP on the WiFi with its own MAC (proxy ARP) and routes the `/30` to `vmbr0`, where MetalLB announces the IP. For any laptop on the hotspot, `10.60.129.240` is just another address on its own network: no routes are needed.
 
 ## 4. Repository Structure
 
 ```
 .
 ├── README.md
-├── .gitignore                      node_modules, dist, *.kubeconfig, .env
 ├── apps/
-│   ├── api/                        package.json, pnpm-lock.yaml, Dockerfile, .dockerignore, src/, test/
-│   └── web/                        package.json, pnpm-lock.yaml, Dockerfile, nginx.conf, index.html, vite.config.js, src/, test/
+│   ├── api/                  Node.js API: src/, test/, Dockerfile, package.json, pnpm-lock.yaml
+│   └── web/                  React web: src/, test/, nginx.conf, Dockerfile, package.json, pnpm-lock.yaml
 ├── infra/
-│   ├── proxmox/
-│   │   ├── interfaces.example
-│   │   ├── authorized_keys
-│   │   ├── nfs-exports
-│   │   ├── create-template.sh
-│   │   ├── create-vms.sh
-│   │   └── cloud-init/kubelab-vendor.yaml
-│   └── k3s/
-│       ├── server-config.yaml
-│       ├── agent-config-worker-01.yaml
-│       ├── agent-config-worker-02.yaml
-│       ├── agent-config-worker-03.yaml
-│       ├── install-server.sh
-│       └── install-agent.sh
+│   ├── proxmox/              interfaces.example, nfs-exports, authorized_keys, create-template.sh,
+│   │                         create-vms.sh, cloud-init/kubelab-vendor.yaml
+│   └── k3s/                  server-config.yaml, agent-config.yaml, install-server.sh, install-agent.sh
 ├── k8s/
 │   ├── argocd/
-│   │   ├── install/                kustomization.yaml, namespace.yaml, install.yaml, argocd-cm.yaml,
-│   │   │                           argocd-cmd-params-cm.yaml, argocd-rbac-cm.yaml
-│   │   ├── routes/ingressroute.yaml
-│   │   ├── root.yaml
-│   │   └── apps/                   namespaces.yaml, metallb.yaml, nfs-provisioner.yaml, metrics-server.yaml,
-│   │                               doppler-operator.yaml, metallb-config.yaml, doppler-secrets.yaml,
-│   │                               traefik.yaml, argocd.yaml, argocd-routes.yaml, database.yaml,
-│   │                               prometheus.yaml, loki.yaml, promtail.yaml, grafana.yaml,
-│   │                               observability-routes.yaml, api.yaml, web.yaml
-│   ├── platform/
-│   │   ├── namespaces/             kubelab.yaml, monitoring.yaml
-│   │   ├── metallb/values.yaml
-│   │   ├── metallb-config/         ipaddresspool.yaml, l2advertisement.yaml
-│   │   ├── traefik/values.yaml
-│   │   ├── nfs-provisioner/values.yaml
-│   │   ├── metrics-server/values.yaml
-│   │   ├── doppler-operator/values.yaml
-│   │   └── doppler-secrets/        postgres.yaml, api.yaml, grafana.yaml
-│   ├── apps/
-│   │   ├── database/               kustomization.yaml, statefulset.yaml, services.yaml, ingressroutetcp.yaml,
-│   │   │                           init-job.yaml, migrations/001_create_products.sql, migrations/002_readonly_role.sql
-│   │   ├── api/                    kustomization.yaml, deployment.yaml, service.yaml, hpa.yaml, pdb.yaml, ingressroute.yaml
-│   │   └── web/                    kustomization.yaml, deployment.yaml, service.yaml, hpa.yaml, pdb.yaml, ingressroute.yaml
-│   └── observability/
-│       ├── prometheus/values.yaml
-│       ├── loki/values.yaml
-│       ├── promtail/values.yaml
-│       ├── grafana/
-│       │   ├── values.yaml
-│       │   └── manifests/          kustomization.yaml, kubelab-overview.json, viewer-user-job.yaml
-│       └── routes/                 grafana.yaml, prometheus.yaml, kustomization.yaml
-├── loadtest/api-load.js
-├── .github/workflows/              api.yml, web.yml
-└── docs/                           hosts.txt, proxmox.md, cluster.md, access.md, doppler.md, ia.md, *.png
+│   │   ├── install/          Argo CD v3.5.6 (install.yaml + Kustomize patches)
+│   │   ├── routes/           IngressRoute argocd.grupo6.lab
+│   │   ├── root.yaml         app of apps
+│   │   └── apps/             one Application per component (18)
+│   ├── platform/             namespaces, MetalLB (+ pool), Traefik, NFS provisioner, metrics-server,
+│   │                         DopplerSecrets
+│   ├── apps/                 api, web and database (StatefulSet, migrations, IngressRouteTCP)
+│   └── observability/        Prometheus, Loki, Promtail, Grafana (dashboard, viewer user) and routes
+├── loadtest/api-load.js      k6 load test for the HPA
+├── .github/workflows/        api.yml, web.yml
+└── docs/                     access.md, hosts.txt, ia.md, screenshots
 ```
+
+The layout follows the structure requested by the assignment. VM creation and cluster installation are documented in section 5 of this README; the zone file is [docs/hosts.txt](docs/hosts.txt).
 
 ## 5. Rebuild from Scratch
 
-Ordered checklist. Everything after step 8 is applied by Argo CD from this repository.
+Ordered steps. Everything after step 5.10 is applied by Argo CD from this repository.
 
-| Step | Action | Section |
+| Step | Action | Where |
 |---|---|---|
-| 1 | Configure the hotspot and test client-to-client ping | 6.1 |
-| 2 | Install Proxmox VE 9.2, repositories and packages | 7.1, 7.2 |
-| 3 | Configure the routed network with DNAT (`/etc/network/interfaces`) and team SSH access | 6.2, 6.3, 6.4 |
-| 4 | Create the cloud-init template and the 4 VMs | 7.3 - 7.5 |
-| 5 | Install k3s (server and 3 agents) and the NFS server on the host | 8 |
-| 6 | Create the Doppler project, configs `prd` and `ci`, and the GitHub secret `DOPPLER_TOKEN` | 11.1, 11.2 |
-| 7 | Bootstrap Argo CD and apply the root Application | 10.3, 10.4 |
-| 8 | Create the Doppler service token Secret (after Argo CD creates `doppler-operator-system`) | 11.3 |
-| 9 | Wait until all Applications are `Synced` and `Healthy` | 10.5 |
-| 10 | Set the Argo CD read-only password and publish the GHCR packages | 16.3, 10.1 |
+| 5.1 | Hotspot | Phone |
+| 5.2 | Install Proxmox VE and prepare the host | Host console |
+| 5.3 | Routed network with proxy ARP | Host console |
+| 5.4 | Team SSH access | Host |
+| 5.5 | NFS server | Host |
+| 5.6 | Cloud-init template | Host |
+| 5.7 | Create the 4 VMs | Host |
+| 5.8 | Install k3s | VMs |
+| 5.9 | `kubectl` from a laptop | Laptop |
+| 5.10 | Doppler, GitHub and Argo CD bootstrap | Doppler, GitHub, laptop |
+| 5.11 | Argo CD read-only account | Laptop |
 
-The only manual `kubectl` commands in the whole project:
-
-```bash
-kubectl apply --server-side --force-conflicts -k k8s/argocd/install
-kubectl wait -n argocd --for=condition=Ready pod --all --timeout=300s
-kubectl apply -f k8s/argocd/root.yaml
-
-read -rs DOPPLER_SERVICE_TOKEN
-kubectl create secret generic doppler-token-secret -n doppler-operator-system \
-  --from-literal=serviceToken="$DOPPLER_SERVICE_TOKEN"
-unset DOPPLER_SERVICE_TOKEN
-```
-
-```bash
-kubectl get applications -n argocd
-```
-
-## 6. Network and Team Access
-
-### 6.1 Hotspot
+### 5.1 Hotspot
 
 | Setting | Value |
 |---|---|
 | SSID | `kubelab-grupo6` |
-| Security | WPA2 (password shared in person) |
-| Auto turn-off | Disabled |
-| Mobile data | On, phone charging |
+| Security | WPA2 (password delivered in person) |
+| Auto turn-off | Disabled; phone charging |
 
-From two laptops connected to the hotspot:
+Check the subnet from a laptop (`ipconfig` / `ip addr`) and restart the hotspot once to confirm it keeps the same subnet. The MetalLB pool and [docs/hosts.txt](docs/hosts.txt) depend on it.
+
+### 5.2 Proxmox VE Installation
+
+| Installer setting | Value |
+|---|---|
+| Target disk | NVMe, ext4 (LVM-thin `local-lvm`; ZFS not used to keep its RAM cache out of the way) |
+| Country / time zone | Guatemala / `America/Guatemala` |
+| Hostname | `pve.kubelab.lan` |
+| Management network | Ethernet NIC with a temporary static IP; replaced by the WiFi in 5.3 |
+
+BIOS: Intel VT-x enabled. Secure Boot disabled (after `full-upgrade`, the new kernel failed with `Verification failed 0x1A`).
+
+After the first boot, on the web UI (`pve` > Updates > Repositories) disable both `enterprise` repositories and add `No-Subscription`. Then, as root:
 
 ```bash
-ping <other_laptop_ip>
+apt update && apt full-upgrade -y
+apt install -y sudo wpasupplicant iw nfs-kernel-server
 ```
 
-![Ping between two hotspot clients](docs/hotspot-ping.png)
+The WiFi packages are installed while the Ethernet cable is still connected: without them the host has no internet on the hotspot.
 
-### 6.2 Routed Network on the Proxmox Host
+The host is a laptop, so closing the lid must not suspend it:
 
-`/etc/network/interfaces` (reference without the WiFi key: [infra/proxmox/interfaces.example](infra/proxmox/interfaces.example)):
+```bash
+mkdir -p /etc/systemd/logind.conf.d
+printf '[Login]\nHandleLidSwitch=ignore\nHandleLidSwitchExternalPower=ignore\nHandleLidSwitchDocked=ignore\n' \
+  > /etc/systemd/logind.conf.d/lid.conf
+```
+
+### 5.3 Routed Network with Proxy ARP
+
+Reference file: [infra/proxmox/interfaces.example](infra/proxmox/interfaces.example) (`/etc/network/interfaces`):
 
 ```
-auto lo
-iface lo inet loopback
-
-iface <nic_ethernet> inet manual
-
-auto <wifi_iface>
-iface <wifi_iface> inet dhcp
+auto wlo1
+iface wlo1 inet dhcp
     wpa-ssid kubelab-grupo6
     wpa-psk <HOTSPOT_PSK_HEX>
-    post-up iw dev <wifi_iface> set power_save off
+    post-up sysctl -w net.ipv4.conf.wlo1.proxy_arp=1
+    post-up iw dev wlo1 set power_save off
 
 auto vmbr0
 iface vmbr0 inet static
@@ -277,149 +245,61 @@ iface vmbr0 inet static
     bridge-ports none
     bridge-stp off
     bridge-fd 0
+    post-up   ip route replace 10.60.129.240/30 dev vmbr0
     post-up   echo 1 > /proc/sys/net/ipv4/ip_forward
-    post-up   iptables -t nat -A POSTROUTING -s 10.10.10.0/24 -o <wifi_iface> -j MASQUERADE
-    post-down iptables -t nat -D POSTROUTING -s 10.10.10.0/24 -o <wifi_iface> -j MASQUERADE
-    post-up   iptables -t nat -A PREROUTING -i <wifi_iface> -m addrtype --dst-type LOCAL -p tcp -m multiport --dports 80,5432 -j DNAT --to-destination 10.10.10.200
-    post-down iptables -t nat -D PREROUTING -i <wifi_iface> -m addrtype --dst-type LOCAL -p tcp -m multiport --dports 80,5432 -j DNAT --to-destination 10.10.10.200
+    post-up   iptables -t nat -A POSTROUTING -s 10.10.10.0/24 -o wlo1 -j MASQUERADE
+    post-down iptables -t nat -D POSTROUTING -s 10.10.10.0/24 -o wlo1 -j MASQUERADE
 ```
 
-Generate `<HOTSPOT_PSK_HEX>` on the host (copy only the `psk=` line without quotes; it stays only on the host):
+The WiFi password never reaches the repository. On the host, as root, it is typed without echo and only its hex form is written to the file:
 
 ```bash
-wpa_passphrase kubelab-grupo6
+read -rs -p "Hotspot password: " HOTSPOT_PASS; echo
+PSK_HEX=$(wpa_passphrase kubelab-grupo6 "$HOTSPOT_PASS" | sed -n 's/^[[:space:]]*psk=\([0-9a-f]\{64\}\)$/\1/p')
+unset HOTSPOT_PASS
+sed "s/<HOTSPOT_PSK_HEX>/$PSK_HEX/" interfaces.example > /etc/network/interfaces
+unset PSK_HEX
+chmod 600 /etc/network/interfaces
 ```
 
-Apply (disconnect USB tethering first):
+Apply from the physical console and **reboot** (`ifreload` leaves the previous default route behind when switching uplinks). Then update `/etc/hosts` with the new address (`<IP> pve.kubelab.lan pve`) and check:
 
 ```bash
-ifreload -a
-ip -4 addr show <wifi_iface>
-ip route
-ping -c3 1.1.1.1
-ip -br addr
-iptables -t nat -S POSTROUTING
-iptables -t nat -S PREROUTING
+ip -br addr show wlo1
+ip route                                  # default via the phone, 10.60.129.240/30 dev vmbr0
+cat /proc/sys/net/ipv4/conf/wlo1/proxy_arp   # 1
+iptables -t nat -S POSTROUTING            # MASQUERADE -o wlo1
+ping -c 3 1.1.1.1
 ```
 
-The Proxmox firewall stays disabled. Proxmox UI: `https://<IP_WIFI_PROXMOX>:8006` from any laptop on the hotspot.
+The Proxmox firewall stays disabled. Web UI: `https://10.60.129.229:8006`.
 
-![Proxmox routed network](docs/proxmox-network.png)
+### 5.4 Team SSH Access
 
-### 6.3 Service Publishing with DNAT
+Each member uses a personal lab key (`~/.ssh/kubelab_ed25519`) and a personal Linux user on the host. The VMs are reached through the host with `ProxyJump`; no laptop needs a route to `10.10.10.0/24`.
 
-The teacher only consumes services, so no laptop needs a route to `10.10.10.0/24`. The Proxmox host forwards the ports of Traefik that arrive on its WiFi address to the MetalLB IP `10.10.10.200`. The rules are the two `PREROUTING` lines of the `vmbr0` block in section 6.2.
-
-| Port | Forwarded to | Used by |
-|---|---|---|
-| 80 | `10.10.10.200:80` (Traefik `web`) | `app`, `api`, `grafana`, `prometheus` and `argocd` |
-| 5432 | `10.10.10.200:5432` (Traefik `postgres`) | `db.grupo6.lab` (IngressRouteTCP) |
-
-- `-i <wifi_iface>`: only traffic entering through the hotspot WiFi.
-- `-m addrtype --dst-type LOCAL`: only packets addressed to the Proxmox host itself, so the rule does not depend on the hotspot subnet.
-- Ports 22 and 8006 are not forwarded: they stay with the Proxmox host. Port 443 is not published because the `websecure` entrypoint is disabled (section 12.3).
-- The `Host` header is not changed: Traefik still chooses the service by the domain the browser requested.
-
-`<IP_WIFI_PROXMOX>` changes when the hotspot is restarted: read it again on the host with `ip -br addr show <wifi_iface>`. The rules keep working; only [docs/hosts.txt](docs/hosts.txt) and the `HostName` of `kubelab-pve` in each `~/.ssh/config` are updated.
+On the host, as root:
 
 ```bash
-iptables -t nat -S PREROUTING
-iptables -t nat -L PREROUTING -v -n
+adduser roberto
+adduser luarca
+echo 'roberto ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/kubelab-roberto && chmod 440 /etc/sudoers.d/kubelab-roberto
 ```
 
-From a laptop on the hotspot, once Traefik is running (section 12.3):
+From each laptop: `ssh-copy-id -i ~/.ssh/kubelab_ed25519.pub <user>@10.60.129.229`. After every member logs in with the key, password logins are disabled:
 
 ```bash
-curl -i http://<IP_WIFI_PROXMOX>
+printf "PasswordAuthentication no\nKbdInteractiveAuthentication no\nPermitRootLogin prohibit-password\n" \
+  > /etc/ssh/sshd_config.d/kubelab.conf
+sshd -t && systemctl reload ssh
 ```
 
-![Proxmox DNAT and MASQUERADE rules](docs/proxmox-dnat.png)
-
-### 6.4 Team SSH Access
-
-No static route is used. Each member enters the Proxmox host with their own user and key, and jumps from there to the VMs (`ProxyJump`).
-
-Each member (L, V, P) creates a lab key on their own laptop (different from the GitHub key), checks it and sends only the public key line to R:
-
-```bash
-ssh-keygen -t ed25519 -C "<initial>@kubelab" -f ~/.ssh/kubelab_ed25519
-cat ~/.ssh/kubelab_ed25519.pub
-ssh-keygen -l -f ~/.ssh/kubelab_ed25519.pub
-```
-
-The host key is generated once (the private key never leaves the host):
-
-```bash
-ssh-keygen -t ed25519 -f /root/.ssh/kubelab -N ""
-```
-
-On the host, one file per member is stored and validated (4 fingerprints expected):
-
-```bash
-mkdir -p /root/kubelab-setup/keys
-nano /root/kubelab-setup/keys/l.pub
-nano /root/kubelab-setup/keys/v.pub
-nano /root/kubelab-setup/keys/p.pub
-grep 'racm@kubelab' /root/kubelab-setup/authorized_keys > /root/kubelab-setup/keys/r.pub
-for member in l v p r; do ssh-keygen -l -f /root/kubelab-setup/keys/$member.pub; done
-```
-
-The keys of L, V and P are added to the 4 existing VMs without duplicating lines, and to the template for future VMs:
-
-```bash
-cat /root/kubelab-setup/keys/{l,v,p}.pub > /root/kubelab-setup/team_keys.pub
-for ip in 10.10.10.11 10.10.10.21 10.10.10.22 10.10.10.23; do
-  ssh -i /root/.ssh/kubelab ubuntu@$ip 'cat >> ~/.ssh/authorized_keys && sort -u ~/.ssh/authorized_keys -o ~/.ssh/authorized_keys' < /root/kubelab-setup/team_keys.pub
-done
-
-cat /root/kubelab-setup/team_keys.pub >> /root/kubelab-setup/authorized_keys
-sort -u /root/kubelab-setup/authorized_keys -o /root/kubelab-setup/authorized_keys
-ssh-keygen -l -f /root/kubelab-setup/authorized_keys
-qm set 9000 --sshkeys /root/kubelab-setup/authorized_keys
-```
-
-The 5 public keys (host plus 4 members) are stored in [infra/proxmox/authorized_keys](infra/proxmox/authorized_keys). Private keys never leave each laptop.
-
-One Linux user per member on the Proxmox host (traceability in `/var/log/auth.log`):
-
-```bash
-apt install -y sudo
-for member in l v p r; do
-  adduser --disabled-password --gecos "" "$member"
-  usermod -aG sudo "$member"
-  install -d -m 700 -o "$member" -g "$member" /home/$member/.ssh
-  install -m 600 -o "$member" -g "$member" /root/kubelab-setup/keys/$member.pub /home/$member/.ssh/authorized_keys
-done
-passwd <initial>
-```
-
-Each member chooses their own `sudo` password in person.
-
-After every member logs in with their key, `/etc/ssh/sshd_config.d/kubelab.conf`:
-
-```
-PasswordAuthentication no
-PermitRootLogin prohibit-password
-```
-
-```bash
-systemctl reload ssh
-```
-
-Proxmox UI users (one per member):
-
-```bash
-pveum user add <initial>@pve
-pveum passwd <initial>@pve
-pveum acl modify / --users <initial>@pve --roles PVEAdmin
-```
-
-`~/.ssh/config` on each laptop (Windows: `C:\Users\<user>\.ssh\config`):
+`~/.ssh/config` on each laptop:
 
 ```
 Host kubelab-pve
-    HostName <IP_WIFI_PROXMOX>
-    User <initial>
+    HostName 10.60.129.229
+    User <user>
     IdentityFile ~/.ssh/kubelab_ed25519
 
 Host kubelab-cp
@@ -428,481 +308,157 @@ Host kubelab-cp
     ProxyJump kubelab-pve
     IdentityFile ~/.ssh/kubelab_ed25519
 
-Host kubelab-worker-01
-    HostName 10.10.10.21
-    User ubuntu
-    ProxyJump kubelab-pve
-    IdentityFile ~/.ssh/kubelab_ed25519
-
-Host kubelab-worker-02
-    HostName 10.10.10.22
-    User ubuntu
-    ProxyJump kubelab-pve
-    IdentityFile ~/.ssh/kubelab_ed25519
-
-Host kubelab-worker-03
-    HostName 10.10.10.23
-    User ubuntu
-    ProxyJump kubelab-pve
-    IdentityFile ~/.ssh/kubelab_ed25519
+# kubelab-worker-01/02/03: same block with 10.10.10.21, .22 and .23
 ```
+
+The public keys that cloud-init puts in the VMs are in [infra/proxmox/authorized_keys](infra/proxmox/authorized_keys). Private keys never leave each laptop.
+
+### 5.5 NFS Server on the Host
 
 ```bash
-ssh kubelab-pve hostname
-ssh kubelab-cp hostname
-ssh kubelab-worker-01 hostname
-scp <file> kubelab-cp:~/
-```
-
-Expected: `pve`, `k3s-cp-01` and `k3s-worker-01`. When the hotspot changes the Proxmox IP, only `HostName` of `kubelab-pve` is updated.
-
-### 6.5 kubectl from a Laptop
-
-The kubeconfig is an admin credential: never committed (`*.kubeconfig` is in `.gitignore`) or shared by chat. It is used through an SSH tunnel, so the kubeconfig keeps `server: https://127.0.0.1:6443` (k3s includes `127.0.0.1` in its certificate).
-
-```bash
-scp kubelab-cp:/etc/rancher/k3s/k3s.yaml ~/.kube/kubelab.kubeconfig
-```
-
-Tunnel in another terminal, open while `kubectl` is used:
-
-```bash
-ssh -N -L 6443:10.10.10.11:6443 kubelab-pve
-```
-
-```bash
-export KUBECONFIG=~/.kube/kubelab.kubeconfig
-kubectl get nodes
-```
-
-Code and YAML are edited on the laptops and reach the cluster through PR + Argo CD. SSH to the servers is only for infrastructure (sections 7 and 8), diagnostics and read-only `kubectl get/describe/logs`.
-
-![Team SSH and kubectl access](docs/team-ssh-access.png)
-
-### 6.6 Team Git Workflow
-
-Each member works from their own laptop and GitHub account (never from the Proxmox host or the VMs):
-
-```bash
-ssh-keygen -t ed25519 -C "<github_user>@github" -f ~/.ssh/github_ed25519
-# Add ~/.ssh/github_ed25519.pub in GitHub: Settings, SSH and GPG keys
-git clone git@github.com:<owner>/kubelab.git
-cd kubelab
-git config user.name "<Full Name>"
-git config user.email "<GitHub account email>"
-echo "PLAN.md" >> .git/info/exclude
-```
-
-Per task:
-
-```bash
-git switch main && git pull
-git switch -c feat/<task>
-git push -u origin feat/<task>
-```
-
-- Small Conventional Commits; PR to `main` reviewed by another member.
-- Merge with "Create a merge commit" or "Rebase and merge". No "Squash and merge" (keeps individual authorship).
-- Before each session: `git pull` on `main` and `git rebase main` on the own branch (the pipeline commits image tags to `main`).
-
-### 6.7 MetalLB Pool and Traefik IP
-
-The range `10.10.10.200-10.10.10.220` is reserved for MetalLB (no DHCP in `10.10.10.0/24`). Traefik requests `10.10.10.200` (section 12.3).
-
-```bash
-kubectl get ipaddresspool,l2advertisement -n metallb-system
-kubectl get svc -n traefik
-```
-
-On the Proxmox host (`10.10.10.200` is only reachable from the internal network):
-
-```bash
-curl -i http://10.10.10.200
-```
-
-![Traefik LoadBalancer Service](docs/traefik-loadbalancer.png)
-
-## 7. Proxmox and VMs
-
-### 7.1 Installation
-
-| Setting | Value |
-|---|---|
-| ISO | `proxmox-ve_9.2-1.iso` (SHA256 checked against the download page) |
-| Disk | Full disk, default ext4/LVM (LVM-thin `local-lvm`) |
-| Country / time zone | `America/Guatemala` |
-| Hostname | `pve.grupo6.lab` |
-| Installer network | Ethernet NIC, `10.10.10.1/24`, gateway `10.10.10.254`, DNS `1.1.1.1` (replaced in 6.2) |
-
-If the machine has no Ethernet NIC, USB tethering from the phone is used during installation.
-
-### 7.2 Repositories and Packages
-
-Temporary internet over USB tethering:
-
-```bash
-ip -br link
-dhclient -v <usb_iface>
-sed -i 's/^Enabled: yes/Enabled: no/' /etc/apt/sources.list.d/pve-enterprise.sources 2>/dev/null || true
-cat /etc/apt/sources.list.d/*.sources
-```
-
-`/etc/apt/sources.list.d/proxmox.sources` (also disable `ceph.sources` if it points to enterprise):
-
-```
-Types: deb
-URIs: http://download.proxmox.com/debian/pve
-Suites: trixie
-Components: pve-no-subscription
-Signed-By: /usr/share/keyrings/proxmox-archive-keyring.gpg
-```
-
-```bash
-apt update && apt full-upgrade -y && apt install -y wpasupplicant iw nfs-kernel-server git
-pveversion
-iw dev
-```
-
-### 7.3 Cloud-init Snippet
-
-[infra/proxmox/cloud-init/kubelab-vendor.yaml](infra/proxmox/cloud-init/kubelab-vendor.yaml):
-
-```yaml
-#cloud-config
-timezone: America/Guatemala
-package_update: true
-packages:
-  - qemu-guest-agent
-  - nfs-common
-runcmd:
-  - systemctl enable --now qemu-guest-agent
-```
-
-```bash
-cp /root/kubelab/infra/proxmox/cloud-init/kubelab-vendor.yaml /var/lib/vz/snippets/
-pvesm set local --content iso,vztmpl,backup,snippets
-```
-
-### 7.4 Template
-
-On the host (the repository is cloned read-only; nothing is committed from the host):
-
-```bash
-git clone https://github.com/<owner>/kubelab.git /root/kubelab
-```
-
-[infra/proxmox/create-template.sh](infra/proxmox/create-template.sh):
-
-```bash
-#!/usr/bin/env bash
-set -euo pipefail
-
-TEMPLATE_ID=9000
-IMAGE_URL=https://cloud-images.ubuntu.com/releases/noble/release-20261017/ubuntu-24.04-server-cloudimg-amd64.img
-IMAGE_FILE=/var/lib/vz/template/ubuntu-24.04-server-cloudimg-amd64.img
-SSH_PUBLIC_KEYS=/root/kubelab/infra/proxmox/authorized_keys
-
-wget -O "$IMAGE_FILE" "$IMAGE_URL"
-
-qm create "$TEMPLATE_ID" --name ubuntu-2404-template --ostype l26 \
-  --memory 2048 --cores 2 --cpu host \
-  --net0 virtio,bridge=vmbr0 \
-  --scsihw virtio-scsi-single --agent enabled=1 \
-  --serial0 socket --vga serial0
-qm set "$TEMPLATE_ID" --scsi0 "local-lvm:0,import-from=${IMAGE_FILE}"
-qm set "$TEMPLATE_ID" --ide2 local-lvm:cloudinit --boot order=scsi0
-qm set "$TEMPLATE_ID" --ciuser ubuntu --sshkeys "$SSH_PUBLIC_KEYS" \
-  --nameserver "1.1.1.1 8.8.8.8" --searchdomain grupo6.lab \
-  --cicustom "vendor=local:snippets/kubelab-vendor.yaml"
-qm template "$TEMPLATE_ID"
-```
-
-```bash
-cd /root/kubelab
-bash infra/proxmox/create-template.sh
-```
-
-Verify the image checksum against `SHA256SUMS` in `https://cloud-images.ubuntu.com/releases/noble/release-20261017/`.
-
-### 7.5 VMs
-
-[infra/proxmox/create-vms.sh](infra/proxmox/create-vms.sh):
-
-```bash
-#!/usr/bin/env bash
-set -euo pipefail
-
-TEMPLATE_ID=9000
-GATEWAY=10.10.10.1
-
-create_vm() {
-  local vm_id=$1 name=$2 ip_address=$3 cores=$4 memory_mb=$5 balloon_mb=$6 disk_size=$7
-  qm clone "$TEMPLATE_ID" "$vm_id" --name "$name" --full
-  qm set "$vm_id" --cores "$cores" --memory "$memory_mb" --balloon "$balloon_mb" --onboot 1 \
-    --ipconfig0 "ip=${ip_address}/24,gw=${GATEWAY}"
-  qm resize "$vm_id" scsi0 "$disk_size"
-  qm start "$vm_id"
-}
-
-create_vm 101 k3s-cp-01     10.10.10.11 2 1280 1024 25G
-create_vm 111 k3s-worker-01 10.10.10.21 2 1152 896 40G
-create_vm 112 k3s-worker-02 10.10.10.22 2 1152 896 40G
-create_vm 113 k3s-worker-03 10.10.10.23 2 1152 896 40G
-```
-
-```bash
-bash infra/proxmox/create-vms.sh
-qm list
-ssh -i /root/.ssh/kubelab ubuntu@10.10.10.21 'hostname; ip -4 -br addr; ping -c1 1.1.1.1; cloud-init status'
-```
-
-Repeat the last command for `10.10.10.11`, `.22` and `.23` (expected `status: done`). Screenshots of the VMs: section 3.
-
-## 8. Kubernetes Distribution (k3s)
-
-### 8.1 Why k3s
-
-- CNCF-certified Kubernetes distribution in a single binary.
-- About 500 MB less RAM per node than kubeadm (important on a 6 GB host).
-- Server install and worker join with one command each.
-- containerd and flannel included.
-- Bundled Traefik, ServiceLB, local-path and metrics-server are disabled; our own versions are installed from this repository by Argo CD.
-
-Details: [docs/cluster.md](docs/cluster.md).
-
-### 8.2 Control Plane
-
-[infra/k3s/server-config.yaml](infra/k3s/server-config.yaml) (copied to `/etc/rancher/k3s/config.yaml`):
-
-```yaml
-node-ip: 10.10.10.11
-tls-san:
-  - 10.10.10.11
-  - k3s-cp-01
-write-kubeconfig-mode: "0644"
-disable:
-  - traefik
-  - servicelb
-  - local-storage
-  - metrics-server
-node-taint:
-  - node-role.kubernetes.io/control-plane=true:NoSchedule
-```
-
-[infra/k3s/install-server.sh](infra/k3s/install-server.sh):
-
-```bash
-#!/usr/bin/env bash
-set -euo pipefail
-sudo mkdir -p /etc/rancher/k3s
-sudo cp server-config.yaml /etc/rancher/k3s/config.yaml
-curl -sfL https://get.k3s.io | INSTALL_K3S_VERSION=v1.36.5+k3s1 sh -s - server
-```
-
-```bash
-scp -r infra/k3s kubelab-cp:~/
-ssh kubelab-cp
-cd ~/k3s && bash install-server.sh
-sudo k3s kubectl get nodes
-```
-
-### 8.3 Workers
-
-[infra/k3s/agent-config-worker-01.yaml](infra/k3s/agent-config-worker-01.yaml) (`-02` uses `10.10.10.22`, `-03` uses `10.10.10.23`):
-
-```yaml
-server: https://10.10.10.11:6443
-node-ip: 10.10.10.21
-```
-
-[infra/k3s/install-agent.sh](infra/k3s/install-agent.sh):
-
-```bash
-#!/usr/bin/env bash
-set -euo pipefail
-: "${K3S_TOKEN:?export K3S_TOKEN first}"
-CONFIG_FILE=$1
-sudo mkdir -p /etc/rancher/k3s
-sudo cp "$CONFIG_FILE" /etc/rancher/k3s/config.yaml
-curl -sfL https://get.k3s.io | INSTALL_K3S_VERSION=v1.36.5+k3s1 K3S_TOKEN="$K3S_TOKEN" sh -s - agent
-```
-
-Read the join token on the control plane (never stored in the repository):
-
-```bash
-sudo cat /var/lib/rancher/k3s/server/node-token
-```
-
-On each worker (example worker-01):
-
-```bash
-scp -r infra/k3s kubelab-worker-01:~/
-ssh kubelab-worker-01
-read -rs K3S_TOKEN; export K3S_TOKEN
-cd ~/k3s && bash install-agent.sh agent-config-worker-01.yaml
-```
-
-### 8.4 NFS Server on the Proxmox Host
-
-```bash
-lvs
-lvcreate -V 60G -T pve/data -n nfs-kubelab
+lvcreate -V 100G -T pve/data -n nfs-kubelab
 mkfs.ext4 /dev/pve/nfs-kubelab
 mkdir -p /srv/nfs/kubelab
-echo "/dev/pve/nfs-kubelab /srv/nfs/kubelab ext4 defaults 0 2" >> /etc/fstab
-mount -a
+echo "/dev/pve/nfs-kubelab /srv/nfs/kubelab ext4 defaults,nofail 0 2" >> /etc/fstab
+systemctl daemon-reload && mount -a
+mkdir -p /etc/exports.d
 cp infra/proxmox/nfs-exports /etc/exports.d/kubelab.exports
 exportfs -ra && exportfs -v
 ```
 
-[infra/proxmox/nfs-exports](infra/proxmox/nfs-exports):
+[infra/proxmox/nfs-exports](infra/proxmox/nfs-exports): `/srv/nfs/kubelab 10.10.10.0/24(rw,sync,no_subtree_check,no_root_squash)`. `nofail` keeps the host booting if the volume fails; `no_root_squash` lets containers such as PostgreSQL change the owner of their data folder. Only the internal network can mount it.
 
-```
-/srv/nfs/kubelab 10.10.10.0/24(rw,sync,no_subtree_check,no_root_squash)
-```
+### 5.6 Cloud-init Template
 
-From a worker:
+Copy `infra/` to the host (`scp -r infra kubelab-pve:/tmp/` and, as root, `cp -r /tmp/infra /root/kubelab/`), then:
 
 ```bash
-showmount -e 10.10.10.1
+pvesm set local --content iso,vztmpl,backup,import,snippets
+mkdir -p /var/lib/vz/snippets
+cp /root/kubelab/infra/proxmox/cloud-init/kubelab-vendor.yaml /var/lib/vz/snippets/
+bash /root/kubelab/infra/proxmox/create-template.sh
 ```
 
-### 8.5 Verification
+[create-template.sh](infra/proxmox/create-template.sh) downloads the Ubuntu 24.04 cloud image, checks its SHA256 and creates template `9000` (VirtIO SCSI disk imported from the image, cloud-init drive, user `ubuntu`, SSH keys from `authorized_keys`, DNS `1.1.1.1 8.8.8.8`, QEMU agent, serial console).
+
+The vendor snippet [kubelab-vendor.yaml](infra/proxmox/cloud-init/kubelab-vendor.yaml) sets the time zone, installs `qemu-guest-agent` and `nfs-common`, and masks services a cluster node does not need (`fwupd`, `multipathd`, `ModemManager`, `udisks2`, `unattended-upgrades`, `apt-daily`), so no automatic upgrade runs during a demo.
+
+### 5.7 Create the VMs (INF-03)
+
+```bash
+bash /root/kubelab/infra/proxmox/create-vms.sh
+qm list
+```
+
+[create-vms.sh](infra/proxmox/create-vms.sh) does, for each node of section 3.1:
+
+1. `qm clone 9000 <id> --name <name> --full`: full clone of the template.
+2. `qm set <id> --cores <n> --memory 4096 --balloon 4096 --onboot 1 --ipconfig0 ip=<ip>/24,gw=10.10.10.1`: CPU, RAM, start with the host and fixed IP through cloud-init.
+3. `qm resize <id> scsi0 <size>`: 25 GB for the control plane, 40 GB for the workers.
+4. `qm start <id>`.
+
+Check each VM (expected `status: done`):
+
+```bash
+ssh kubelab-cp 'hostname; ip -4 -br addr; cloud-init status; systemctl is-active qemu-guest-agent'
+```
+
+### 5.8 Install k3s (INF-04)
+
+**Why k3s.** CNCF-certified Kubernetes in a single binary, with SQLite as the default datastore, low memory use on the control plane and one-command installation for server and agents. Its bundled Traefik, ServiceLB, local-path storage and metrics-server are disabled, so our own versions are installed by Argo CD with values from this repository. kubeadm would add etcd and more components to operate without changing what the assignment evaluates; RKE2 is heavier for 4 VMs on one host.
+
+Control plane ([server-config.yaml](infra/k3s/server-config.yaml): `node-ip`, `tls-san`, disabled components and the taint `node-role.kubernetes.io/control-plane=true:NoSchedule`):
+
+```bash
+scp infra/k3s/server-config.yaml infra/k3s/install-server.sh kubelab-cp:
+ssh kubelab-cp 'bash install-server.sh && sudo k3s kubectl get nodes'
+```
+
+Workers ([agent-config.yaml](infra/k3s/agent-config.yaml) reserves 200 MiB for the OS). The join token goes through standard input, never through the screen or the shell history:
+
+```bash
+K3S_TOKEN=$(ssh kubelab-cp 'sudo cat /var/lib/rancher/k3s/server/node-token')
+for h in kubelab-worker-01 kubelab-worker-02 kubelab-worker-03; do
+  scp infra/k3s/agent-config.yaml infra/k3s/install-agent.sh $h:
+  ssh $h 'read -r K3S_TOKEN; export K3S_TOKEN; bash install-agent.sh' <<< "$K3S_TOKEN"
+done
+unset K3S_TOKEN
+```
 
 ```bash
 kubectl get nodes -o wide
 kubectl describe node k3s-cp-01 | grep Taints
 ```
 
-Expected: 4 nodes `Ready`, version `v1.36.5+k3s1`, taint `node-role.kubernetes.io/control-plane=true:NoSchedule` on `k3s-cp-01`.
+Expected: 4 nodes `Ready` on `v1.36.5+k3s1` and the taint on `k3s-cp-01` (INF-05).
 
-![k3s nodes](docs/k3s-nodes.png)
+### 5.9 kubectl from a Laptop
 
-## 9. Applications
+The kubeconfig is an admin credential: it is never committed (`*.kubeconfig` is in `.gitignore`). It is used through an SSH tunnel, so it keeps `server: https://127.0.0.1:6443`.
 
-Entity: `products` (inventory). Node.js 24, ESM, pnpm.
+```bash
+ssh kubelab-cp 'cat /etc/rancher/k3s/k3s.yaml' > ~/.kube/kubelab.kubeconfig && chmod 600 ~/.kube/kubelab.kubeconfig
+ssh -f -N -L 6443:10.10.10.11:6443 kubelab-pve
+export KUBECONFIG=~/.kube/kubelab.kubeconfig
+kubectl get nodes
+```
 
-### 9.1 API (`apps/api`)
+### 5.10 Doppler, GitHub and Argo CD Bootstrap
 
-| Method | Path | Description |
+1. **Doppler** (section 9): project `virtualization-project` with configs `prd` (cluster) and `dev` (CI).
+2. **GitHub**: repository secret `DOPPLER_TOKEN` (read-only service token of `dev`); Settings > Actions > General > Workflow permissions: **Read and write**.
+3. **IP pool**: [ipaddresspool.yaml](k8s/platform/metallb-config/ipaddresspool.yaml) and [traefik/values.yaml](k8s/platform/traefik/values.yaml) must use the hotspot subnet.
+4. **Bootstrap**, the only manual `kubectl` commands of the project. The repository is private, so Argo CD needs its credential before it can read Git: the Doppler Operator comes from its public Helm chart, and the repository credential from a `DopplerSecret` applied from the local copy.
+
+```bash
+kubectl apply --server-side --force-conflicts -k k8s/argocd/install
+kubectl apply -f k8s/argocd/apps/doppler-operator.yaml
+kubectl wait --for=condition=Established crd/dopplersecrets.secrets.doppler.com --timeout=300s
+
+read -rs DOPPLER_SERVICE_TOKEN        # read-only service token of the prd config
+kubectl create secret generic doppler-token-secret -n doppler-operator-system \
+  --from-literal=serviceToken="$DOPPLER_SERVICE_TOKEN"
+unset DOPPLER_SERVICE_TOKEN
+
+kubectl apply -f k8s/platform/doppler-secrets/argocd-repo.yaml
+kubectl get secret kubelab-repo -n argocd --show-labels
+kubectl apply -f k8s/argocd/root.yaml
+```
+
+5. Wait until every Application is `Synced` and `Healthy` (about 6 minutes):
+
+```bash
+kubectl get applications -n argocd
+```
+
+`root` then adopts the same Doppler Operator and `argocd-repo` resources, because they are in Git with the same names.
+
+### 5.11 Argo CD Read-only Account
+
+The account `docente` is declared in [argocd-cm.yaml](k8s/argocd/install/argocd-cm.yaml) (`accounts.docente: login`) and bound to `role:readonly` in [argocd-rbac-cm.yaml](k8s/argocd/install/argocd-rbac-cm.yaml). Its password comes from Doppler and is hashed inside the Argo CD server pod, so it is never printed:
+
+```bash
+ARGOCD_READONLY_PASSWORD=$(doppler secrets get ARGOCD_READONLY_PASSWORD --plain --project virtualization-project --config prd)
+PASSWORD_HASH=$(kubectl -n argocd exec deploy/argocd-server -- argocd account bcrypt --password "$ARGOCD_READONLY_PASSWORD")
+kubectl -n argocd patch secret argocd-secret --type merge \
+  -p "{\"stringData\":{\"accounts.docente.password\":\"$PASSWORD_HASH\",\"accounts.docente.passwordMtime\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}}"
+unset ARGOCD_READONLY_PASSWORD PASSWORD_HASH
+```
+
+The admin password is in the Secret `argocd-initial-admin-secret` and is never shared.
+
+## 6. Platform
+
+| Component | Files | Configuration |
 |---|---|---|
-| GET | `/health` | Readiness: runs `SELECT 1`, returns 200 or 503 |
-| GET | `/health/live` | Liveness, no database check |
-| GET | `/metrics` | Prometheus metrics: default metrics, `http_requests_total{method,route,status_code}`, `http_request_duration_seconds` |
-| GET | `/api/products` | List products |
-| POST | `/api/products` | Create (`name` required, `quantity >= 0`, `price >= 0`) |
-| GET | `/api/products/:id` | Get one (404 if missing) |
-| PUT | `/api/products/:id` | Update (404 if missing) |
-| DELETE | `/api/products/:id` | Delete (404 if missing) |
+| Namespaces | [k8s/platform/namespaces](k8s/platform/namespaces) | `kubelab` and `monitoring`, created first so Doppler can write Secrets into them |
+| MetalLB (NET-01) | [metallb/values.yaml](k8s/platform/metallb/values.yaml), [metallb-config](k8s/platform/metallb-config) | L2 mode, FRR disabled, speakers only on workers. `IPAddressPool kubelab-pool` `10.60.129.240-10.60.129.243` (`autoAssign: false`) and `L2Advertisement kubelab-l2` |
+| Traefik (NET-02 to NET-04) | [traefik/values.yaml](k8s/platform/traefik/values.yaml) | 2 replicas, Service `LoadBalancer` with `metallb.io/loadBalancerIPs: 10.60.129.240`, entrypoints `web` (80) and `postgres` (5432), only the CRD provider (IngressRoute), access log on, HTTPS entrypoint not exposed |
+| NFS provisioner (PER-01) | [nfs-provisioner/values.yaml](k8s/platform/nfs-provisioner/values.yaml) | Server `10.10.10.1:/srv/nfs/kubelab`, StorageClass `nfs-client` (**default**), `reclaimPolicy: Retain`, `archiveOnDelete: true`, folders `<namespace>-<pvc>` |
+| metrics-server (HA-04) | [metrics-server/values.yaml](k8s/platform/metrics-server/values.yaml) | `--kubelet-insecure-tls` (k3s kubelet certificates are self-signed) |
+| Doppler Operator (SEC-02) | [doppler-operator.yaml](k8s/argocd/apps/doppler-operator.yaml), [doppler-secrets](k8s/platform/doppler-secrets) | Public chart 1.7.5; 4 `DopplerSecret` resources (section 9) |
 
-- One JSON log line per request to stdout (collected by Promtail).
-- `DATABASE_URL` from the Secret `api-credentials` (Doppler).
-- Closes the database pool on `SIGTERM`.
-- Tests: `test/products.test.js` (`node:test` + supertest, in-memory repository) and `test/integration.test.js` (real PostgreSQL in CI, skipped without `DATABASE_URL`).
-
-```bash
-cd apps/api
-pnpm add express@5 pg@8 prom-client@15
-pnpm add -D supertest
-pnpm install
-pnpm test
-cd ../..
-docker build -t kubelab-api:dev apps/api
-```
-
-Files: [apps/api/package.json](apps/api/package.json), [apps/api/src/app.js](apps/api/src/app.js), [apps/api/src/routes/products.js](apps/api/src/routes/products.js), [apps/api/src/metrics.js](apps/api/src/metrics.js), [apps/api/Dockerfile](apps/api/Dockerfile)
-
-```bash
-curl -s http://api.grupo6.lab/health
-curl -s -X POST http://api.grupo6.lab/api/products -H "Content-Type: application/json" -d '{"name":"keyboard","quantity":10,"price":25.50}'
-curl -s http://api.grupo6.lab/api/products
-curl -s -X PUT http://api.grupo6.lab/api/products/1 -H "Content-Type: application/json" -d '{"name":"keyboard","quantity":8,"price":25.50}'
-curl -s -X DELETE http://api.grupo6.lab/api/products/1
-curl -s http://api.grupo6.lab/metrics | grep http_requests_total
-```
-
-### 9.2 Web (`apps/web`)
-
-React (Vite) client that lists, creates, edits and deletes products through relative `/api/products` calls. nginx serves the static build and proxies `/api/` to the internal API Service.
-
-```bash
-cd apps
-pnpm create vite@latest web --template react
-cd web
-pnpm add -D vitest
-pnpm test
-cd ../..
-docker build -t kubelab-web:dev apps/web
-```
-
-[apps/web/nginx.conf](apps/web/nginx.conf):
-
-```nginx
-server {
-    listen 8080;
-    root /usr/share/nginx/html;
-
-    location /api/ {
-        proxy_pass http://api.kubelab.svc.cluster.local:3000;
-    }
-
-    location = /healthz {
-        access_log off;
-        return 200 "ok\n";
-    }
-
-    location / {
-        try_files $uri /index.html;
-    }
-}
-```
-
-Files: [apps/web/src/App.jsx](apps/web/src/App.jsx), [apps/web/src/api/products.js](apps/web/src/api/products.js), [apps/web/Dockerfile](apps/web/Dockerfile)
-
-### 9.3 Database (`k8s/apps/database`)
-
-| Resource | Configuration |
-|---|---|
-| StatefulSet `postgres` | 1 replica, `postgres:17.11-alpine`, `serviceName: postgres-headless`, `envFrom: secretRef postgres-credentials`, `PGDATA=/var/lib/postgresql/data/pgdata` |
-| Volume | `volumeClaimTemplates` `data` 5Gi (default StorageClass `nfs-client`) |
-| Probes | readiness and liveness `exec: pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB"` |
-| Resources | requests 100m / 256Mi, limit 512Mi |
-| Services | ClusterIP `postgres` (5432), headless `postgres-headless` (`clusterIP: None`) |
-| Job `db-init` | Argo CD `PostSync` hook, `hook-delete-policy: BeforeHookCreation`, runs the migrations |
-| ConfigMap `db-migrations` | `configMapGenerator` with the `.sql` files (name hash changes when a SQL file changes) |
-
-[k8s/apps/database/migrations/001_create_products.sql](k8s/apps/database/migrations/001_create_products.sql):
-
-```sql
-CREATE TABLE IF NOT EXISTS products (
-  id SERIAL PRIMARY KEY,
-  name VARCHAR(120) NOT NULL,
-  quantity INTEGER NOT NULL DEFAULT 0 CHECK (quantity >= 0),
-  price NUMERIC(10, 2) NOT NULL DEFAULT 0 CHECK (price >= 0),
-  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-```
-
-[k8s/apps/database/migrations/002_readonly_role.sql](k8s/apps/database/migrations/002_readonly_role.sql):
-
-```sql
-SELECT format('CREATE ROLE %I LOGIN PASSWORD %L', :'readonly_user', :'readonly_password')
-WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = :'readonly_user') \gexec
-GRANT CONNECT ON DATABASE kubelab TO :"readonly_user";
-GRANT USAGE ON SCHEMA public TO :"readonly_user";
-GRANT SELECT ON ALL TABLES IN SCHEMA public TO :"readonly_user";
-ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO :"readonly_user";
-```
-
-[k8s/apps/database/init-job.yaml](k8s/apps/database/init-job.yaml) command (`PGHOST=postgres`, `PGUSER`/`PGPASSWORD`/`PGDATABASE` from `postgres-credentials`):
-
-```sh
-psql -v ON_ERROR_STOP=1 -f /migrations/001_create_products.sql &&
-psql -v ON_ERROR_STOP=1 -v readonly_user="$DB_READONLY_USER" -v readonly_password="$DB_READONLY_PASSWORD" -f /migrations/002_readonly_role.sql
-```
-
-[k8s/apps/database/ingressroutetcp.yaml](k8s/apps/database/ingressroutetcp.yaml):
+Database route ([ingressroutetcp.yaml](k8s/apps/database/ingressroutetcp.yaml)). PostgreSQL has no TLS SNI, so everything arriving at entrypoint `postgres` goes to this Service:
 
 ```yaml
 apiVersion: traefik.io/v1alpha1
@@ -920,1039 +476,200 @@ spec:
           port: 5432
 ```
 
-Files: [k8s/apps/database/statefulset.yaml](k8s/apps/database/statefulset.yaml), [k8s/apps/database/services.yaml](k8s/apps/database/services.yaml), [k8s/apps/database/kustomization.yaml](k8s/apps/database/kustomization.yaml)
-
 ```bash
-kubectl get sts,pvc,job -n kubelab
-psql "host=db.grupo6.lab port=5432 dbname=kubelab user=docente sslmode=disable" -c '\dt'
+kubectl get ipaddresspool,l2advertisement -n metallb-system
+kubectl get svc -n traefik traefik          # EXTERNAL-IP 10.60.129.240
+kubectl get storageclass
 ```
 
-### 9.4 API and Web Manifests
+## 7. Applications
+
+Entity: `products` (inventory). Node.js 24, ESM, pnpm.
+
+### 7.1 API (`apps/api`, APP-01)
+
+| Method | Path | Description |
+|---|---|---|
+| GET | `/health` | Readiness: runs `SELECT 1`; 200, or 503 if the database does not answer |
+| GET | `/health/live` | Liveness, without the database |
+| GET | `/metrics` | Prometheus metrics: default Node.js metrics, `http_requests_total{method,route,status_code}` and `http_request_duration_seconds` (labelled by route pattern, not by id) |
+| GET | `/api/products` | List products |
+| POST | `/api/products` | Create (`name` required up to 120 chars, `quantity` integer >= 0, `price` >= 0); 400 with the list of errors |
+| GET | `/api/products/:id` | Get one; 404 if it does not exist |
+| PUT | `/api/products/:id` | Update; 404 if it does not exist |
+| DELETE | `/api/products/:id` | Delete; 204, or 404 if it does not exist |
+
+- One JSON log line per request to stdout (collected by Promtail); probes and `/metrics` are not logged.
+- `DATABASE_URL` comes from the Secret `api-credentials` (Doppler).
+- On `SIGTERM` it stops accepting connections, finishes in-flight requests and closes the database pool (clean rolling updates).
+- Tests: `pnpm test` runs unit tests with an in-memory repository (CRUD, validation, health, metrics) and an integration test against PostgreSQL when `DATABASE_URL` is set (always in CI).
+
+### 7.2 Web (`apps/web`, APP-02)
+
+React (Vite) client that lists, creates, edits and deletes products through relative calls to `/api/products`. In the cluster, nginx serves the static build and proxies `/api/` to the internal Service `api.kubelab.svc.cluster.local:3000`, so the browser only talks to `app.grupo6.lab` (no CORS). Tests: `pnpm test` (Vitest, API client with a mocked `fetch`).
+
+### 7.3 Database (`k8s/apps/database`, APP-03, APP-07, PER-03)
+
+| Resource | Configuration |
+|---|---|
+| StatefulSet `postgres` | 1 replica, `postgres:17.11-alpine`, `serviceName: postgres-headless`, `envFrom` Secret `postgres-credentials`, `shared_buffers=64MB`, `max_connections=50` |
+| Volume | `volumeClaimTemplates` `data`, 5Gi on `nfs-client` |
+| Probes | readiness and liveness with `pg_isready` |
+| Services | `postgres` (ClusterIP 5432) and `postgres-headless` |
+| Job `db-init` | Argo CD `PostSync` hook: waits for PostgreSQL and runs the migrations |
+| Migrations | [001_create_products.sql](k8s/apps/database/migrations/001_create_products.sql) (`CREATE TABLE IF NOT EXISTS products`) and [002_readonly_role.sql](k8s/apps/database/migrations/002_readonly_role.sql) (read-only role `docente`: `CONNECT`, `USAGE` and `SELECT` only), both idempotent |
+
+### 7.4 API and Web Manifests (`k8s/apps/api`, `k8s/apps/web`, HA-01 to HA-03)
 
 | Setting | api | web |
 |---|---|---|
-| Image | `ghcr.io/<owner>/kubelab-api` (tag set by kustomize) | `ghcr.io/<owner>/kubelab-web` (tag set by kustomize) |
-| `replicas` field | Not set (managed by the HPA) | Not set (managed by the HPA) |
-| Strategy | `RollingUpdate`, `maxUnavailable: 0`, `maxSurge: 1` | `RollingUpdate`, `maxUnavailable: 0`, `maxSurge: 1` |
-| Port / Service | `api` ClusterIP 3000 | `web` ClusterIP 8080 |
-| Readiness probe | `GET /health` | `GET /healthz` |
-| Liveness probe | `GET /health/live` | `GET /healthz` |
-| Requests | `cpu: 100m`, `memory: 128Mi` | `cpu: 50m`, `memory: 32Mi` |
-| Limits | `cpu: 500m`, `memory: 256Mi` | `cpu: 250m`, `memory: 128Mi` |
-| Secret | `envFrom: secretRef api-credentials` | - |
-| Annotations | Pod: `prometheus.io/scrape: "true"`, `prometheus.io/port: "3000"`, `prometheus.io/path: /metrics`; Deployment: `secrets.doppler.com/reload: "true"` | - |
-| HPA / PDB | Section 14 | Section 14 |
+| Image | `docker.io/alejandrocald13/kubelab-api:<short-sha>` | `docker.io/alejandrocald13/kubelab-web:<short-sha>` |
+| `replicas` field | Not set: the HPA owns it (otherwise selfHeal would reset it on every scale) | Not set |
+| Strategy | `RollingUpdate`, `maxUnavailable: 0`, `maxSurge: 1` | Same |
+| Spread | `topologySpreadConstraints` by node (`ScheduleAnyway`) | Same |
+| Security | `runAsNonRoot`, `runAsUser: 1000` | `runAsNonRoot`, `runAsUser: 101` |
+| Readiness / liveness | `GET /health` (3 s initial delay) / `GET /health/live` | `GET /healthz` / `GET /healthz` |
+| Requests / limits | `100m`, `128Mi` / `500m`, `256Mi` | `50m`, `16Mi` / `250m`, `64Mi` |
+| Other | Pod annotations `prometheus.io/scrape`, `port: "3000"`, `path: /metrics`; Deployment annotation `secrets.doppler.com/reload: "true"` | - |
+| HPA / PDB | 2 to 6 replicas at 60 % CPU / `minAvailable: 1` | Same |
 | IngressRoute | ``Host(`api.grupo6.lab`)`` | ``Host(`app.grupo6.lab`)`` |
 
-[k8s/apps/api/ingressroute.yaml](k8s/apps/api/ingressroute.yaml):
+## 8. CI/CD and GitOps
 
-```yaml
-apiVersion: traefik.io/v1alpha1
-kind: IngressRoute
-metadata:
-  name: api
-  namespace: kubelab
-spec:
-  entryPoints:
-    - web
-  routes:
-    - match: Host(`api.grupo6.lab`)
-      kind: Rule
-      services:
-        - name: api
-          port: 3000
-```
+### 8.1 Flow
 
-[k8s/apps/api/kustomization.yaml](k8s/apps/api/kustomization.yaml) (image tag updated by the pipeline):
+1. A member pushes to `main` (or merges a pull request) with changes in `apps/api/**` or `apps/web/**`.
+2. Only the workflow of that application runs (path filter, CD-01). On pull requests only the tests run.
+3. `test`: credentials from Doppler (`dopplerhq/secrets-fetch-action`, SEC-03). The API starts PostgreSQL 17 with `docker run` (not `services:`, because services start before the Doppler variables exist), applies the first migration and runs `pnpm test`; the web runs `pnpm test` and `pnpm build`.
+4. `build-and-deploy`: login to Docker Hub with the token from Doppler, build and push `docker.io/alejandrocald13/kubelab-<app>:<short-sha>` (APP-05: never `latest`).
+5. `kustomize edit set image` updates `newTag` in `k8s/apps/<app>/kustomization.yaml` and the bot commits `ci(<app>): deploy image <short-sha>` to `main`.
+6. Argo CD detects the commit (reconciliation every 60 s) and syncs the Application: RollingUpdate without downtime.
+7. A change only in `k8s/` runs no workflow: Argo CD applies it directly.
 
-```yaml
-images:
-  - name: ghcr.io/<owner>/kubelab-api
-    newTag: <short-sha>
-```
+Details in [.github/workflows/api.yml](.github/workflows/api.yml) and [.github/workflows/web.yml](.github/workflows/web.yml):
 
-Files: [k8s/apps/api/deployment.yaml](k8s/apps/api/deployment.yaml), [k8s/apps/api/service.yaml](k8s/apps/api/service.yaml), [k8s/apps/web/deployment.yaml](k8s/apps/web/deployment.yaml), [k8s/apps/web/ingressroute.yaml](k8s/apps/web/ingressroute.yaml)
+- A push made with `GITHUB_TOKEN` does not trigger other workflows, so the bot commit does not create a loop.
+- Both workflows share the `concurrency` group `deploy-manifests`, so they never push manifests at the same time; `git pull --rebase` covers commits made in between.
 
-```bash
-kubectl get deploy,hpa,pdb,ingressroute -n kubelab
-curl http://api.grupo6.lab/health
-```
+### 8.2 Argo CD (CD-02 to CD-04)
 
-![kubelab namespace resources](docs/kubelab-resources.png)
+Installed from [k8s/argocd/install](k8s/argocd/install): pinned `install.yaml` v3.5.6 plus Kustomize patches. `server.insecure` (Traefik serves HTTP), `url: http://argocd.grupo6.lab`, `timeout.reconciliation: 60s`, account `docente` with `role:readonly`, and a health check for `Application` resources so each sync wave waits until the previous one is `Healthy`. Dex, notifications and the ApplicationSet controller are scaled to 0 because they are not used. Argo CD does not manage its own installation: changes to `k8s/argocd/install` are applied with the bootstrap command.
 
-![Web CRUD in the browser](docs/browser-web-crud.png)
+[root.yaml](k8s/argocd/root.yaml) (app of apps) points to [k8s/argocd/apps](k8s/argocd/apps). Every Application uses `automated` sync with `prune: true` and `selfHeal: true`, and `ServerSideApply=true`.
 
-![API health in the browser](docs/browser-api-health.png)
-
-## 10. CI/CD and GitOps
-
-### 10.1 Flow
-
-```
-1. PR merged into main with changes in apps/api (or apps/web)
-2. GitHub Actions: tests (Doppler config ci + PostgreSQL container), build,
-   push ghcr.io/<owner>/kubelab-api:<short-sha>
-3. GitHub Actions: kustomize edit set image in k8s/apps/api/kustomization.yaml,
-   commit "ci(api): deploy image <short-sha>" to main
-4. Argo CD detects the new commit (reconciliation every 60s) and syncs the api Application
-5. Kubernetes RollingUpdate (maxUnavailable: 0); Argo CD shows Synced and Healthy
-```
-
-A change only in `k8s/` does not run any workflow: Argo CD applies it directly.
-
-Repository settings:
-
-| Setting | Value |
-|---|---|
-| Visibility | Public (teacher added as collaborator) |
-| Ruleset on `main` | Block force pushes, Restrict deletions |
-| Actions, Workflow permissions | Read and write |
-| GHCR packages `kubelab-api`, `kubelab-web` | Public (no `imagePullSecrets`) |
-| Actions secret | `DOPPLER_TOKEN` (section 11.2) |
-
-### 10.2 Workflow
-
-[.github/workflows/api.yml](.github/workflows/api.yml) ([.github/workflows/web.yml](.github/workflows/web.yml) is the same with `web` instead of `api` and without PostgreSQL):
-
-```yaml
-name: api
-
-on:
-  push:
-    branches: [main]
-    paths:
-      - "apps/api/**"
-      - ".github/workflows/api.yml"
-  pull_request:
-    paths:
-      - "apps/api/**"
-      - ".github/workflows/api.yml"
-
-permissions:
-  contents: write
-  packages: write
-
-concurrency:
-  group: deploy-manifests
-  cancel-in-progress: false
-
-env:
-  IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/kubelab-api
-
-jobs:
-  test:
-    runs-on: ubuntu-24.04
-    defaults:
-      run:
-        working-directory: apps/api
-    steps:
-      - uses: actions/checkout@v7
-      - uses: dopplerhq/secrets-fetch-action@v2.0.0
-        with:
-          doppler-token: ${{ secrets.DOPPLER_TOKEN }}
-          inject-env-vars: true
-      - name: Start PostgreSQL
-        run: |
-          docker run -d --name postgres -p 5432:5432 \
-            -e POSTGRES_DB -e POSTGRES_USER -e POSTGRES_PASSWORD \
-            postgres:17.11-alpine
-          until docker exec postgres pg_isready -U "$POSTGRES_USER"; do sleep 2; done
-          docker exec -i postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" < ../../k8s/apps/database/migrations/001_create_products.sql
-      - uses: pnpm/action-setup@v6
-        with:
-          package_json_file: apps/api/package.json
-      - uses: actions/setup-node@v7
-        with:
-          node-version: 24
-          cache: pnpm
-          cache-dependency-path: apps/api/pnpm-lock.yaml
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm test
-        env:
-          DATABASE_URL: postgresql://${{ env.POSTGRES_USER }}:${{ env.POSTGRES_PASSWORD }}@localhost:5432/${{ env.POSTGRES_DB }}
-
-  build-and-deploy:
-    if: github.event_name == 'push'
-    needs: test
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v7
-      - name: Short commit hash
-        run: echo "SHORT_SHA=${GITHUB_SHA::7}" >> "$GITHUB_ENV"
-      - uses: docker/setup-buildx-action@v4
-      - uses: docker/login-action@v4
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-      - uses: docker/build-push-action@v7
-        with:
-          context: apps/api
-          push: true
-          tags: ${{ env.IMAGE_NAME }}:${{ env.SHORT_SHA }}
-      - name: Update image tag in manifests
-        working-directory: k8s/apps/api
-        run: kustomize edit set image "${IMAGE_NAME}=${IMAGE_NAME}:${SHORT_SHA}"
-      - name: Commit manifest change
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add k8s/apps/api/kustomization.yaml
-          git commit -m "ci(api): deploy image ${SHORT_SHA}"
-          git pull --rebase origin main
-          git push origin HEAD:main
-```
-
-- Pushes made with `GITHUB_TOKEN` do not trigger other workflows (no loop).
-- The shared `concurrency` group prevents the api and web pipelines from pushing manifests at the same time.
-
-![GitHub Actions runs](docs/github-actions-runs.png)
-
-![GHCR packages with SHA tags](docs/ghcr-packages.png)
-
-### 10.3 Argo CD Installation
-
-```bash
-curl -fL -o k8s/argocd/install/install.yaml https://raw.githubusercontent.com/argoproj/argo-cd/v3.5.6/manifests/install.yaml
-```
-
-[k8s/argocd/install/kustomization.yaml](k8s/argocd/install/kustomization.yaml):
-
-```yaml
-apiVersion: kustomize.config.k8s.io/v1beta1
-kind: Kustomization
-namespace: argocd
-resources:
-  - namespace.yaml
-  - install.yaml
-patches:
-  - path: argocd-cmd-params-cm.yaml
-  - path: argocd-cm.yaml
-  - path: argocd-rbac-cm.yaml
-```
-
-[k8s/argocd/install/argocd-cmd-params-cm.yaml](k8s/argocd/install/argocd-cmd-params-cm.yaml):
-
-```yaml
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: argocd-cmd-params-cm
-data:
-  server.insecure: "true"
-```
-
-[k8s/argocd/install/argocd-cm.yaml](k8s/argocd/install/argocd-cm.yaml):
-
-```yaml
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: argocd-cm
-data:
-  url: http://argocd.grupo6.lab
-  timeout.reconciliation: 60s
-  accounts.docente: login
-  resource.customizations.health.argoproj.io_Application: |
-    hs = {}
-    hs.status = "Progressing"
-    hs.message = ""
-    if obj.status ~= nil and obj.status.health ~= nil then
-      hs.status = obj.status.health.status
-      if obj.status.health.message ~= nil then
-        hs.message = obj.status.health.message
-      end
-    end
-    return hs
-```
-
-[k8s/argocd/install/argocd-rbac-cm.yaml](k8s/argocd/install/argocd-rbac-cm.yaml):
-
-```yaml
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: argocd-rbac-cm
-data:
-  policy.csv: "g, docente, role:readonly"
-```
-
-The `Application` health check makes the sync waves wait until each child Application is `Healthy`.
-
-[k8s/argocd/routes/ingressroute.yaml](k8s/argocd/routes/ingressroute.yaml):
-
-```yaml
-apiVersion: traefik.io/v1alpha1
-kind: IngressRoute
-metadata:
-  name: argocd
-  namespace: argocd
-spec:
-  entryPoints:
-    - web
-  routes:
-    - match: Host(`argocd.grupo6.lab`)
-      kind: Rule
-      services:
-        - name: argocd-server
-          port: 80
-```
-
-Bootstrap (manual, only once):
-
-```bash
-kubectl apply --server-side --force-conflicts -k k8s/argocd/install
-kubectl wait -n argocd --for=condition=Ready pod --all --timeout=300s
-```
-
-Before Traefik exists:
-
-```bash
-kubectl port-forward -n argocd svc/argocd-server 8080:80
-kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 -d; echo
-```
-
-### 10.4 Root Application (App of Apps)
-
-[k8s/argocd/root.yaml](k8s/argocd/root.yaml):
-
-```yaml
-apiVersion: argoproj.io/v1alpha1
-kind: Application
-metadata:
-  name: root
-  namespace: argocd
-spec:
-  project: default
-  source:
-    repoURL: https://github.com/<owner>/kubelab.git
-    targetRevision: main
-    path: k8s/argocd/apps
-  destination:
-    server: https://kubernetes.default.svc
-    namespace: argocd
-  syncPolicy:
-    automated:
-      prune: true
-      selfHeal: true
-```
-
-```bash
-kubectl apply -f k8s/argocd/root.yaml
-```
-
-### 10.5 Applications and Sync Waves
-
-All child Applications use `automated: {prune: true, selfHeal: true}` and `syncOptions: [CreateNamespace=true, ServerSideApply=true]`.
-
-| File (`k8s/argocd/apps/`) | Source | Namespace | Wave |
+| Wave | Application | Source | Namespace |
 |---|---|---|---|
-| `namespaces.yaml` | `k8s/platform/namespaces` | - | -10 |
-| `metallb.yaml` | chart metallb 0.16.1 + `$values/k8s/platform/metallb/values.yaml` | `metallb-system` | -9 |
-| `nfs-provisioner.yaml` | chart 4.0.18 + values | `nfs-provisioner` | -9 |
-| `metrics-server.yaml` | chart 3.14.0 + values | `kube-system` | -9 |
-| `doppler-operator.yaml` | chart 1.7.5 + values | `doppler-operator-system` | -9 |
-| `metallb-config.yaml` | `k8s/platform/metallb-config` | `metallb-system` | -8 |
-| `doppler-secrets.yaml` | `k8s/platform/doppler-secrets` | `doppler-operator-system` | -8 |
-| `traefik.yaml` | chart 41.7.1 + values | `traefik` | -7 |
-| `argocd.yaml` | `k8s/argocd/install` (Argo CD manages itself) | `argocd` | -6 |
-| `argocd-routes.yaml` | `k8s/argocd/routes` | `argocd` | -6 |
-| `database.yaml` | `k8s/apps/database` | `kubelab` | 0 |
-| `prometheus.yaml`, `loki.yaml`, `promtail.yaml` | charts + values | `monitoring` | 0 |
-| `grafana.yaml` | chart 13.7.0 + values + `k8s/observability/grafana/manifests` (dashboards and job) | `monitoring` | 0 |
-| `observability-routes.yaml` | `k8s/observability/routes` | `monitoring` | 0 |
-| `api.yaml`, `web.yaml` | `k8s/apps/api`, `k8s/apps/web` | `kubelab` | 1 |
+| -10 | `namespaces` | `k8s/platform/namespaces` | - |
+| -9 | `metallb` | chart 0.16.1 + values | `metallb-system` |
+| -9 | `nfs-provisioner` | chart 4.0.18 + values | `nfs-provisioner` |
+| -9 | `metrics-server` | chart 3.14.0 + values | `kube-system` |
+| -9 | `doppler-operator` | chart 1.7.5 | `doppler-operator-system` |
+| -8 | `metallb-config` | `k8s/platform/metallb-config` | `metallb-system` |
+| -8 | `doppler-secrets` | `k8s/platform/doppler-secrets` | `doppler-operator-system` |
+| -8 | `traefik-crds` | chart traefik-crds 1.18.0 | `traefik` |
+| -7 | `traefik` | chart 41.7.1 + values | `traefik` |
+| -6 | `argocd-routes` | `k8s/argocd/routes` | `argocd` |
+| 0 | `database` | `k8s/apps/database` | `kubelab` |
+| 0 | `prometheus`, `loki`, `promtail` | charts + values | `monitoring` |
+| 0 | `grafana` | chart 13.7.0 + values + `k8s/observability/grafana/manifests` | `monitoring` |
+| 0 | `observability-routes` | `k8s/observability/routes` | `monitoring` |
+| 1 | `api` | `k8s/apps/api` | `kubelab` |
+| 2 | `web` | `k8s/apps/web` (after the API: nginx resolves the `api` Service at start) | `kubelab` |
 
-Chart with values from this repository (multi-source), [k8s/argocd/apps/traefik.yaml](k8s/argocd/apps/traefik.yaml):
+Charts with values from this repository use multiple sources: the Helm chart plus this repository as `$values`.
 
-```yaml
-apiVersion: argoproj.io/v1alpha1
-kind: Application
-metadata:
-  name: traefik
-  namespace: argocd
-  annotations:
-    argocd.argoproj.io/sync-wave: "-7"
-spec:
-  project: default
-  sources:
-    - repoURL: https://traefik.github.io/charts
-      chart: traefik
-      targetRevision: 41.7.1
-      helm:
-        releaseName: traefik
-        valueFiles:
-          - $values/k8s/platform/traefik/values.yaml
-    - repoURL: https://github.com/<owner>/kubelab.git
-      targetRevision: main
-      ref: values
-  destination:
-    server: https://kubernetes.default.svc
-    namespace: traefik
-  syncPolicy:
-    automated:
-      prune: true
-      selfHeal: true
-    syncOptions:
-      - CreateNamespace=true
-      - ServerSideApply=true
-```
+## 9. Secrets with Doppler
 
-Folder from this repository, [k8s/argocd/apps/api.yaml](k8s/argocd/apps/api.yaml):
+Doppler is the only source of credentials. The repository versions only `DopplerSecret` resources (which keys go to which Secret), never values.
 
-```yaml
-apiVersion: argoproj.io/v1alpha1
-kind: Application
-metadata:
-  name: api
-  namespace: argocd
-  annotations:
-    argocd.argoproj.io/sync-wave: "1"
-spec:
-  project: default
-  source:
-    repoURL: https://github.com/<owner>/kubelab.git
-    targetRevision: main
-    path: k8s/apps/api
-  destination:
-    server: https://kubernetes.default.svc
-    namespace: kubelab
-  syncPolicy:
-    automated:
-      prune: true
-      selfHeal: true
-    syncOptions:
-      - CreateNamespace=true
-      - ServerSideApply=true
-```
+### 9.1 Project and Configs (SEC-01)
 
-```bash
-kubectl get applications -n argocd
-```
+Project `virtualization-project`. Passwords are generated, alphanumeric, 24 or more characters.
 
-## 11. Secrets (Doppler)
-
-Doppler is the only source of credentials. Argo CD only versions `DopplerSecret` resources (which keys and where), never values. Procedure without values: [docs/doppler.md](docs/doppler.md).
-
-### 11.1 Doppler Project
-
-Project `kubelab`. Passwords are generated, alphanumeric, 24+ characters.
-
-Config `prd` (cluster):
-
-| Key | Value | Kubernetes Secret |
+| Config | Keys | Used by |
 |---|---|---|
-| `POSTGRES_DB` | `kubelab` | `postgres-credentials` (`kubelab`) |
-| `POSTGRES_USER` | `kubelab` | `postgres-credentials` (`kubelab`) |
-| `POSTGRES_PASSWORD` | generated | `postgres-credentials` (`kubelab`) |
-| `DB_READONLY_USER` | `docente` | `postgres-credentials` (`kubelab`) |
-| `DB_READONLY_PASSWORD` | generated | `postgres-credentials` (`kubelab`) |
-| `DATABASE_URL` | `postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres.kubelab.svc.cluster.local:5432/${POSTGRES_DB}` (Doppler references) | `api-credentials` (`kubelab`) |
-| `GRAFANA_ADMIN_USER` | `admin` | `grafana-credentials` (`monitoring`) |
-| `GRAFANA_ADMIN_PASSWORD` | generated | `grafana-credentials` (`monitoring`) |
-| `GRAFANA_VIEWER_USER` | `docente` | `grafana-credentials` (`monitoring`) |
-| `GRAFANA_VIEWER_PASSWORD` | generated | `grafana-credentials` (`monitoring`) |
-| `ARGOCD_READONLY_PASSWORD` | generated | - (set once with the `argocd` CLI, section 16.3) |
+| `prd` | `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD`, `DB_READONLY_USER`, `DB_READONLY_PASSWORD`, `DATABASE_URL` (Doppler reference to the `POSTGRES_*` keys), `GRAFANA_ADMIN_USER`, `GRAFANA_ADMIN_PASSWORD`, `GRAFANA_VIEWER_USER`, `GRAFANA_VIEWER_PASSWORD`, `ARGOCD_READONLY_PASSWORD`, `ARGOCD_REPO_TYPE`, `ARGOCD_REPO_URL`, `ARGOCD_REPO_USERNAME`, `ARGOCD_REPO_PASSWORD` | Doppler Operator in the cluster |
+| `dev` | `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD` (test values), `DOCKERHUB_USERNAME`, `DOCKERHUB_TOKEN` | GitHub Actions |
 
-Config `ci` (pipeline tests): `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD` (test values).
+`ARGOCD_REPO_PASSWORD` is a fine-grained GitHub token, read-only (`Contents: Read-only`) on this repository only. The Docker Hub token has Read & Write scope only.
 
-### 11.2 GitHub Actions Secret
+### 9.2 DopplerSecret Resources (SEC-02)
 
-Service token of the `ci` config stored as the repository secret `DOPPLER_TOKEN` (Settings, Secrets and variables, Actions). Used by `dopplerhq/secrets-fetch-action@v2.0.0` (section 10.2).
+| File | Kubernetes Secret | Keys |
+|---|---|---|
+| [argocd-repo.yaml](k8s/platform/doppler-secrets/argocd-repo.yaml) | `argocd/kubelab-repo`, label `argocd.argoproj.io/secret-type: repository` | `ARGOCD_REPO_*`, renamed to `type`, `url`, `username`, `password` |
+| [postgres.yaml](k8s/platform/doppler-secrets/postgres.yaml) | `kubelab/postgres-credentials` | `POSTGRES_*`, `DB_READONLY_*` |
+| [api.yaml](k8s/platform/doppler-secrets/api.yaml) | `kubelab/api-credentials` | `DATABASE_URL` |
+| [grafana.yaml](k8s/platform/doppler-secrets/grafana.yaml) | `monitoring/grafana-credentials` | `GRAFANA_*` |
 
-### 11.3 Doppler Token in the Cluster (the only manual Secret)
+The operator resyncs every 60 s. A change of `DATABASE_URL` restarts the API automatically (`secrets.doppler.com/reload`).
 
-Read-only service token of the `prd` config, created after Argo CD has created the namespace `doppler-operator-system`:
+### 9.3 The Only Manual Secret (SEC-04)
 
-```bash
-kubectl get ns doppler-operator-system
-read -rs DOPPLER_SERVICE_TOKEN
-kubectl create secret generic doppler-token-secret -n doppler-operator-system \
-  --from-literal=serviceToken="$DOPPLER_SERVICE_TOKEN"
-unset DOPPLER_SERVICE_TOKEN
-```
+The read-only service token of the `prd` config, created once in the bootstrap (section 5.10):
 
-### 11.4 DopplerSecret
+1. Doppler > `virtualization-project` > `prd` > Access > Service Tokens > Generate, access **Read**.
+2. Copy it and create the Secret with `read -rs` (it is never echoed, written to a file or stored in the shell history).
+3. To rotate it: generate a new token, recreate the Secret and revoke the old token in Doppler.
 
-[k8s/platform/doppler-secrets/postgres.yaml](k8s/platform/doppler-secrets/postgres.yaml):
+The GitHub Actions secret `DOPPLER_TOKEN` (read-only token of `dev`) is created the same way in the repository settings.
 
-```yaml
-apiVersion: secrets.doppler.com/v1alpha1
-kind: DopplerSecret
-metadata:
-  name: postgres-credentials
-  namespace: doppler-operator-system
-spec:
-  tokenSecret:
-    name: doppler-token-secret
-  managedSecret:
-    name: postgres-credentials
-    namespace: kubelab
-    type: Opaque
-  secrets:
-    - POSTGRES_DB
-    - POSTGRES_USER
-    - POSTGRES_PASSWORD
-    - DB_READONLY_USER
-    - DB_READONLY_PASSWORD
-  resyncSeconds: 60
-```
-
-| File | Managed Secret | Namespace | Keys |
-|---|---|---|---|
-| [postgres.yaml](k8s/platform/doppler-secrets/postgres.yaml) | `postgres-credentials` | `kubelab` | `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD`, `DB_READONLY_USER`, `DB_READONLY_PASSWORD` |
-| [api.yaml](k8s/platform/doppler-secrets/api.yaml) | `api-credentials` | `kubelab` | `DATABASE_URL` |
-| [grafana.yaml](k8s/platform/doppler-secrets/grafana.yaml) | `grafana-credentials` | `monitoring` | `GRAFANA_ADMIN_USER`, `GRAFANA_ADMIN_PASSWORD`, `GRAFANA_VIEWER_USER`, `GRAFANA_VIEWER_PASSWORD` |
-
-Verification (key names only, never values):
+Verification without values:
 
 ```bash
 kubectl get dopplersecrets -n doppler-operator-system
-kubectl get secret -n kubelab postgres-credentials -o jsonpath='{.data}' | python3 -c 'import json,sys; print(list(json.load(sys.stdin)))'
-kubectl get secret -n kubelab api-credentials -o jsonpath='{.data}' | python3 -c 'import json,sys; print(list(json.load(sys.stdin)))'
-kubectl get secret -n monitoring grafana-credentials -o jsonpath='{.data}' | python3 -c 'import json,sys; print(list(json.load(sys.stdin)))'
+kubectl get secret -n kubelab postgres-credentials -o jsonpath='{.data}' | python3 -c 'import json,sys; print(sorted(json.load(sys.stdin)))'
+git log -p --all | grep -inE 'dp\.st\.|dckr_pat_|github_pat_|BEGIN .*PRIVATE KEY'    # expected: no output
 ```
 
-![DopplerSecrets and synced keys](docs/doppler-secrets.png)
-
-Repository history check (no real matches expected):
-
-```bash
-git log -p | grep -iE 'password|dp\.st\.|token|BEGIN .*PRIVATE'
-```
-
-## 12. Platform
-
-### 12.1 Namespaces
-
-[k8s/platform/namespaces/kubelab.yaml](k8s/platform/namespaces/kubelab.yaml), [k8s/platform/namespaces/monitoring.yaml](k8s/platform/namespaces/monitoring.yaml):
-
-```yaml
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: kubelab
----
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: monitoring
-```
-
-### 12.2 MetalLB
-
-[k8s/platform/metallb/values.yaml](k8s/platform/metallb/values.yaml):
-
-```yaml
-frrk8s:
-  enabled: false
-```
-
-[k8s/platform/metallb-config/ipaddresspool.yaml](k8s/platform/metallb-config/ipaddresspool.yaml), [k8s/platform/metallb-config/l2advertisement.yaml](k8s/platform/metallb-config/l2advertisement.yaml):
-
-```yaml
-apiVersion: metallb.io/v1beta1
-kind: IPAddressPool
-metadata:
-  name: kubelab-pool
-  namespace: metallb-system
-spec:
-  addresses:
-    - 10.10.10.200-10.10.10.220
-  autoAssign: false
----
-apiVersion: metallb.io/v1beta1
-kind: L2Advertisement
-metadata:
-  name: kubelab-l2
-  namespace: metallb-system
-spec:
-  ipAddressPools:
-    - kubelab-pool
-```
-
-```bash
-kubectl get pods -n metallb-system
-kubectl get ipaddresspool,l2advertisement -n metallb-system
-```
-
-### 12.3 Traefik
-
-[k8s/platform/traefik/values.yaml](k8s/platform/traefik/values.yaml):
-
-```yaml
-deployment:
-  replicas: 2
-service:
-  type: LoadBalancer
-  annotations:
-    metallb.io/loadBalancerIPs: 10.10.10.200
-ports:
-  web:
-    port: 8000
-    exposedPort: 80
-  websecure:
-    expose:
-      default: false
-  postgres:
-    port: 5432
-    exposedPort: 5432
-    protocol: TCP
-    expose:
-      default: true
-providers:
-  kubernetesCRD:
-    enabled: true
-  kubernetesIngress:
-    enabled: false
-accessLog:
-  enabled: true
-ingressRoute:
-  dashboard:
-    enabled: false
-resources:
-  requests:
-    cpu: 100m
-    memory: 64Mi
-  limits:
-    memory: 256Mi
-```
-
-```bash
-kubectl get svc -n traefik
-curl -i http://10.10.10.200
-```
-
-Expected: `EXTERNAL-IP 10.10.10.200`, ports 80 and 5432, and a Traefik 404 for requests without a matching host. `curl` runs on the Proxmox host; from a laptop on the hotspot, `curl -i http://<IP_WIFI_PROXMOX>` returns the same 404 through the DNAT of section 6.3.
-
-### 12.4 NFS Provisioner
-
-[k8s/platform/nfs-provisioner/values.yaml](k8s/platform/nfs-provisioner/values.yaml):
-
-```yaml
-nfs:
-  server: 10.10.10.1
-  path: /srv/nfs/kubelab
-storageClass:
-  name: nfs-client
-  defaultClass: true
-  reclaimPolicy: Retain
-  archiveOnDelete: true
-  pathPattern: "${.PVC.namespace}-${.PVC.name}"
-```
-
-```bash
-kubectl get storageclass
-ls /srv/nfs/kubelab
-```
-
-### 12.5 metrics-server
-
-[k8s/platform/metrics-server/values.yaml](k8s/platform/metrics-server/values.yaml):
-
-```yaml
-args:
-  - --kubelet-insecure-tls
-```
-
-```bash
-kubectl top nodes
-```
-
-### 12.6 Doppler Operator
-
-[k8s/platform/doppler-operator/values.yaml](k8s/platform/doppler-operator/values.yaml):
-
-```yaml
-{}
-```
-
-## 13. Observability
-
-### 13.1 Prometheus
-
-[k8s/observability/prometheus/values.yaml](k8s/observability/prometheus/values.yaml) (based on personal-project-01: no ingress, 8Gi volume, `kubernetes-pods` job active without drops):
-
-```yaml
-server:
-  retention: "3d"
-  persistentVolume:
-    enabled: true
-    size: 8Gi
-  resources:
-    requests:
-      cpu: 100m
-      memory: 256Mi
-    limits:
-      memory: 1Gi
-
-scrapeConfigs:
-  prometheus-pushgateway:
-    enabled: false
-  kubernetes-services:
-    enabled: false
-
-alertmanager:
-  enabled: false
-prometheus-pushgateway:
-  enabled: false
-
-kube-state-metrics:
-  enabled: true
-prometheus-node-exporter:
-  enabled: true
-```
-
-The `kubernetes-pods` job scrapes the API through its `prometheus.io/*` pod annotations.
-
-### 13.2 Loki
-
-[k8s/observability/loki/values.yaml](k8s/observability/loki/values.yaml) (Monolithic, filesystem, 72h retention):
-
-```yaml
-deploymentMode: Monolithic
-
-loki:
-  auth_enabled: false
-  commonConfig:
-    replication_factor: 1
-  storage:
-    type: filesystem
-  schemaConfig:
-    configs:
-      - from: "2024-04-01"
-        store: tsdb
-        object_store: filesystem
-        schema: v13
-        index:
-          prefix: loki_index_
-          period: 24h
-  limits_config:
-    retention_period: 72h
-  compactor:
-    retention_enabled: true
-    delete_request_store: filesystem
-
-singleBinary:
-  replicas: 1
-  persistence:
-    enabled: true
-    size: 8Gi
-  resources:
-    requests:
-      cpu: 100m
-      memory: 256Mi
-    limits:
-      memory: 1Gi
-
-gateway:
-  enabled: false
-chunksCache:
-  enabled: false
-resultsCache:
-  enabled: false
-lokiCanary:
-  enabled: false
-test:
-  enabled: false
-minio:
-  enabled: false
-
-backend:
-  replicas: 0
-read:
-  replicas: 0
-write:
-  replicas: 0
-```
-
-### 13.3 Promtail
-
-[k8s/observability/promtail/values.yaml](k8s/observability/promtail/values.yaml) (logs from all namespaces; the default tolerations cover the control plane taint, 4 pods):
-
-```yaml
-image:
-  tag: 3.6.11
-
-config:
-  clients:
-    - url: http://loki.monitoring.svc.cluster.local:3100/loki/api/v1/push
-
-resources:
-  requests:
-    cpu: 50m
-    memory: 64Mi
-  limits:
-    memory: 256Mi
-```
-
-### 13.4 Grafana
-
-[k8s/observability/grafana/values.yaml](k8s/observability/grafana/values.yaml) (admin credentials from the Doppler-managed Secret `grafana-credentials`):
-
-```yaml
-admin:
-  existingSecret: grafana-credentials
-  userKey: GRAFANA_ADMIN_USER
-  passwordKey: GRAFANA_ADMIN_PASSWORD
-
-testFramework:
-  enabled: false
-
-grafana.ini:
-  server:
-    root_url: http://grafana.grupo6.lab
-
-persistence:
-  enabled: true
-  size: 2Gi
-
-resources:
-  requests:
-    cpu: 100m
-    memory: 128Mi
-  limits:
-    memory: 512Mi
-
-datasources:
-  datasources.yaml:
-    apiVersion: 1
-    datasources:
-      - name: Prometheus
-        type: prometheus
-        uid: prometheus
-        access: proxy
-        url: http://prometheus-server.monitoring.svc.cluster.local
-        isDefault: true
-        editable: false
-      - name: Loki
-        type: loki
-        uid: loki
-        access: proxy
-        url: http://loki.monitoring.svc.cluster.local:3100
-        editable: false
-
-dashboardProviders:
-  dashboardproviders.yaml:
-    apiVersion: 1
-    providers:
-      - name: kubelab
-        orgId: 1
-        folder: KubeLab
-        type: file
-        disableDeletion: true
-        editable: false
-        options:
-          path: /var/lib/grafana/dashboards/kubelab
-
-dashboardsConfigMaps:
-  kubelab: grafana-dashboards
-```
-
-[k8s/observability/grafana/manifests/kustomization.yaml](k8s/observability/grafana/manifests/kustomization.yaml):
-
-```yaml
-apiVersion: kustomize.config.k8s.io/v1beta1
-kind: Kustomization
-namespace: monitoring
-generatorOptions:
-  disableNameSuffixHash: true
-resources:
-  - viewer-user-job.yaml
-configMapGenerator:
-  - name: grafana-dashboards
-    files:
-      - kubelab-overview.json
-```
-
-Viewer user: [k8s/observability/grafana/manifests/viewer-user-job.yaml](k8s/observability/grafana/manifests/viewer-user-job.yaml), a `PostSync` Job (`curlimages/curl:8.23.0`) that calls `POST /api/admin/users` with the admin credentials from `grafana-credentials`, sets the Viewer role, and exits OK on 412 (user already exists).
-
-Admin password (not stored in this repository):
-
-```bash
-kubectl -n monitoring get secret grafana-credentials -o jsonpath='{.data.GRAFANA_ADMIN_PASSWORD}' | base64 -d; echo
-```
-
-### 13.5 Dashboard `KubeLab Overview`
-
-[k8s/observability/grafana/manifests/kubelab-overview.json](k8s/observability/grafana/manifests/kubelab-overview.json) (data sources uid `prometheus` and `loki`):
-
-| Panel | Query |
+## 10. Observability
+
+| Component | Files | Configuration |
+|---|---|---|
+| Prometheus (OBS-01) | [prometheus/values.yaml](k8s/observability/prometheus/values.yaml) | Retention 1 day, PVC 4Gi. Scrapes node-exporter (nodes), kube-state-metrics and cAdvisor (Kubernetes) and the API `/metrics` through the `kubernetes-pods` job (pod annotations). Alertmanager and Pushgateway disabled. In k3s the control plane kubelet repeats all API server metrics, so `kubernetes-api-servers` is disabled and `kubernetes-nodes` keeps only `kubelet_*`, `process_*` and `go_goroutines` (from ~100 000 to ~9 400 series) |
+| Loki (OBS-02) | [loki/values.yaml](k8s/observability/loki/values.yaml) | Monolithic, filesystem storage, retention 48 h, PVC 4Gi |
+| Promtail (OBS-02) | [promtail/values.yaml](k8s/observability/promtail/values.yaml) | DaemonSet on the 4 nodes (it tolerates the control plane taint), pushes to `loki.monitoring:3100` |
+| Grafana (OBS-03) | [grafana/values.yaml](k8s/observability/grafana/values.yaml) | Admin from the Secret `grafana-credentials`; data sources Prometheus (`uid: prometheus`) and Loki (`uid: loki`) provisioned from code; dashboard provider `KubeLab`; PVC 1Gi; `startupProbe` for the first start (SQLite migrations on NFS); `Recreate` strategy |
+| Viewer user | [viewer-user-job.yaml](k8s/observability/grafana/manifests/viewer-user-job.yaml) | `PostSync` Job that creates `docente` (Viewer) through the Grafana API, or updates its password if it already exists |
+
+Dashboard **KubeLab Overview** (OBS-04), [kubelab-overview.json](k8s/observability/grafana/manifests/kubelab-overview.json), folder `KubeLab`:
+
+| Panel | Source |
 |---|---|
-| CPU by pod (`kubelab`) | `sum by (pod) (rate(container_cpu_usage_seconds_total{namespace="kubelab", container!="", image!=""}[5m]))` |
-| Memory by pod (`kubelab`) | `sum by (pod) (container_memory_working_set_bytes{namespace="kubelab", container!="", image!=""})` |
-| CPU by node | `100 * sum by (instance) (rate(node_cpu_seconds_total{mode!="idle"}[5m])) / count by (instance) (node_cpu_seconds_total{mode="idle"})` |
-| Memory by node | `100 * (1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)` |
-| Available replicas | `kube_deployment_status_replicas_available{namespace="kubelab"}` |
-| HPA current replicas | `kube_horizontalpodautoscaler_status_current_replicas{namespace="kubelab"}` |
-| API requests per second | `sum by (route, status_code) (rate(http_requests_total{namespace="kubelab", app="api"}[1m]))` |
-| Application logs (LogQL) | `{namespace="kubelab", app=~"api\|web"}` |
-| Traefik logs (LogQL) | `{namespace="traefik"}` |
-
-### 13.6 IngressRoutes
-
-[k8s/observability/routes/grafana.yaml](k8s/observability/routes/grafana.yaml), [k8s/observability/routes/prometheus.yaml](k8s/observability/routes/prometheus.yaml):
-
-```yaml
-apiVersion: traefik.io/v1alpha1
-kind: IngressRoute
-metadata:
-  name: grafana
-  namespace: monitoring
-spec:
-  entryPoints:
-    - web
-  routes:
-    - match: Host(`grafana.grupo6.lab`)
-      kind: Rule
-      services:
-        - name: grafana
-          port: 80
----
-apiVersion: traefik.io/v1alpha1
-kind: IngressRoute
-metadata:
-  name: prometheus
-  namespace: monitoring
-spec:
-  entryPoints:
-    - web
-  routes:
-    - match: Host(`prometheus.grupo6.lab`)
-      kind: Rule
-      services:
-        - name: prometheus-server
-          port: 80
-```
-
-[k8s/observability/routes/kustomization.yaml](k8s/observability/routes/kustomization.yaml):
-
-```yaml
-apiVersion: kustomize.config.k8s.io/v1beta1
-kind: Kustomization
-resources:
-  - grafana.yaml
-  - prometheus.yaml
-```
-
-### 13.7 Verification
+| CPU by node | `node_cpu_seconds_total` |
+| Memory by node | `node_memory_MemAvailable_bytes` / `node_memory_MemTotal_bytes` |
+| CPU by pod (`kubelab`) | `container_cpu_usage_seconds_total` |
+| Memory by pod (`kubelab`) | `container_memory_working_set_bytes` |
+| Available replicas | `kube_deployment_status_replicas_available` |
+| HPA current replicas | `kube_horizontalpodautoscaler_status_current_replicas` |
+| API requests per second | `sum by (route, status_code) (rate(http_requests_total{namespace="kubelab", app="api"}[5m]))` |
+| Logs | Loki: `kubelab` applications and Traefik |
 
 ```bash
 kubectl get pods -n monitoring -o wide
 kubectl get pvc -A
-curl -s -o /dev/null -w "%{http_code}\n" http://prometheus.grupo6.lab/-/ready
-curl -s -o /dev/null -w "%{http_code}\n" http://grafana.grupo6.lab/login
 ```
 
-Expected: Promtail and node-exporter on the 4 nodes, all PVCs `Bound` to `nfs-client`. Generate traffic before checking logs (section 14.3).
+## 11. High Availability, Scaling and Persistence
 
-![Prometheus targets](docs/prometheus-targets.png)
+### 11.1 HPA and PDB (HA-04)
 
-![Grafana data sources](docs/grafana-datasources.png)
+[k8s/apps/api/hpa.yaml](k8s/apps/api/hpa.yaml): `autoscaling/v2`, 2 to 6 replicas, 60 % average CPU utilization (relative to the 100m request), scale-down stabilization of 60 s. The web uses the same values. [pdb.yaml](k8s/apps/api/pdb.yaml): `minAvailable: 1`. Traefik runs 2 replicas.
 
-![KubeLab dashboard](docs/grafana-dashboard.png)
+### 11.2 Load Test (HA-05)
 
-![Promtail on all nodes](docs/promtail-all-nodes.png)
-
-![PVCs on nfs-client](docs/pvcs-nfs.png)
-
-## 14. High Availability and Scaling
-
-### 14.1 HPA and PDB
-
-[k8s/apps/api/hpa.yaml](k8s/apps/api/hpa.yaml):
-
-```yaml
-apiVersion: autoscaling/v2
-kind: HorizontalPodAutoscaler
-metadata:
-  name: api
-  namespace: kubelab
-spec:
-  scaleTargetRef:
-    apiVersion: apps/v1
-    kind: Deployment
-    name: api
-  minReplicas: 2
-  maxReplicas: 6
-  metrics:
-    - type: Resource
-      resource:
-        name: cpu
-        target:
-          type: Utilization
-          averageUtilization: 60
-  behavior:
-    scaleDown:
-      stabilizationWindowSeconds: 60
-```
-
-[k8s/apps/api/pdb.yaml](k8s/apps/api/pdb.yaml):
-
-```yaml
-apiVersion: policy/v1
-kind: PodDisruptionBudget
-metadata:
-  name: api
-  namespace: kubelab
-spec:
-  minAvailable: 1
-  selector:
-    matchLabels:
-      app: api
-```
-
-Web uses the same files with `web`: [k8s/apps/web/hpa.yaml](k8s/apps/web/hpa.yaml), [k8s/apps/web/pdb.yaml](k8s/apps/web/pdb.yaml). Traefik runs 2 replicas (section 12.3).
+[loadtest/api-load.js](loadtest/api-load.js): k6 ramps to 50 virtual users in 1 minute, holds 3 minutes and ramps down in 1 minute against `/api/products`; it fails if more than 1 % of the requests fail or the p95 is over 1 s.
 
 ```bash
-kubectl get hpa,pdb -n kubelab
-kubectl top pods -n kubelab
+docker run --rm -i --add-host api.grupo6.lab:10.60.129.240 grafana/k6:1.8.2 run - < loadtest/api-load.js
+kubectl get hpa api -n kubelab -w          # in another terminal
 ```
 
-### 14.2 Load Test (k6)
+Result on 2026-11-03: the API scaled 2 -> 3 -> 5 replicas and back to 2 after the test; about 112 000 requests, all `200`, p95 5 ms measured by the API.
 
-[loadtest/api-load.js](loadtest/api-load.js):
+### 11.3 Pod Deletion and Persistence (PER-02)
 
-```javascript
-import http from "k6/http";
-import { check, sleep } from "k6";
-
-export const options = {
-  stages: [
-    { duration: "1m", target: 50 },
-    { duration: "3m", target: 50 },
-    { duration: "1m", target: 0 },
-  ],
-};
-
-export default function () {
-  const response = http.get("http://api.grupo6.lab/api/products");
-  check(response, { "status is 200": (result) => result.status === 200 });
-  sleep(0.1);
-}
-```
-
-From a laptop on the hotspot with [docs/hosts.txt](docs/hosts.txt) applied:
-
-```bash
-docker run --rm -i --add-host api.grupo6.lab:<IP_WIFI_PROXMOX> grafana/k6:1.8.2 run - < loadtest/api-load.js
-```
-
-In another terminal:
-
-```bash
-kubectl get hpa -n kubelab -w
-```
-
-Expected: `api` scales from 2 towards 6 replicas and scales down after the test. If the WiFi bandwidth keeps CPU below 60 %, run k6 1.8.2 from the Proxmox host (same internal network) with `--add-host api.grupo6.lab:10.10.10.200`.
-
-![HPA scaling](docs/hpa-scaling.png)
-
-![Grafana during the load test](docs/grafana-hpa-load.png)
-
-### 14.3 Pod Deletion Test
-
-Continuous traffic (only `200` expected):
+Continuous traffic in one terminal (only `200` expected):
 
 ```bash
 while true; do curl -s -o /dev/null -w "%{http_code}\n" http://app.grupo6.lab/api/products; sleep 0.5; done
@@ -1966,133 +683,105 @@ kubectl delete -n kubelab "$(kubectl get pod -n kubelab -l app=web -o name | hea
 kubectl delete -n traefik "$(kubectl get pod -n traefik -l app.kubernetes.io/name=traefik -o name | head -n1)"
 ```
 
-Data persistence (same products before and after):
+Data survives the deletion of the stateful pods:
 
 ```bash
 curl -s http://api.grupo6.lab/api/products
 kubectl delete pod postgres-0 -n kubelab
 kubectl get pod postgres-0 -n kubelab -w
-curl -s http://api.grupo6.lab/api/products
+curl -s http://api.grupo6.lab/api/products          # same products
 ```
 
-```bash
-kubectl delete pod -n monitoring -l app.kubernetes.io/name=grafana
-kubectl delete pod -n monitoring -l app.kubernetes.io/name=loki
-kubectl delete pod -n monitoring -l app.kubernetes.io/name=prometheus,app.kubernetes.io/component=server
-kubectl get pods -n monitoring -w
-```
+## 12. URL Table
 
-Dashboards, metrics and logs remain after the pods return. Screenshot: section 17.
-
-## 15. URL Table
+Add [docs/hosts.txt](docs/hosts.txt) to the hosts file and always use `http://`.
 
 | URL | Service | What the teacher should see |
 |---|---|---|
-| http://app.grupo6.lab | Web (React + nginx) | Products page: list, create, edit and delete products |
-| http://api.grupo6.lab/health | API | HTTP 200 with the database check passing |
+| http://app.grupo6.lab | Web (React + nginx) | Inventory page: list, create, edit and delete products |
+| http://api.grupo6.lab/health | API | `{"status":"ok","database":"ok"}` |
+| http://api.grupo6.lab/api/products | API | JSON list of products |
+| http://api.grupo6.lab/metrics | API | Prometheus metrics, including `http_requests_total` by route |
 | `db.grupo6.lab:5432` | PostgreSQL (IngressRouteTCP) | `psql "host=db.grupo6.lab port=5432 dbname=kubelab user=docente sslmode=disable" -c '\dt'` lists the `products` table |
-| http://grafana.grupo6.lab | Grafana | Login as `docente` (Viewer), data sources Prometheus and Loki, folder `KubeLab` with the KubeLab Overview dashboard |
-| http://prometheus.grupo6.lab | Prometheus | Status, Targets: all jobs UP, including `kubernetes-pods` with the API |
+| http://grafana.grupo6.lab | Grafana | Login as `docente` (Viewer): data sources Prometheus and Loki, folder `KubeLab` with the KubeLab Overview dashboard |
+| http://prometheus.grupo6.lab | Prometheus | Status > Targets: all jobs `UP`, including `kubernetes-pods` with the API pods |
 | http://argocd.grupo6.lab | Argo CD | Login as `docente` (read-only): `root` and all child Applications `Synced` and `Healthy` |
 
-## 16. Teacher Access
+## 13. Teacher Access
 
-Access is through the group hotspot, a DNAT on the Proxmox host (section 6.3) and a hosts file. The teacher only consumes services: no SSH, no `kubectl` and no routes are needed. This replaces the VPN (ZeroTier or Tailscale) required by ACC-02, by group decision. Full guide: [docs/access.md](docs/access.md).
-
-### 16.1 Steps
+Full guide: [docs/access.md](docs/access.md).
 
 1. Join the WiFi `kubelab-grupo6` (password delivered in person).
-2. Copy the content of [docs/hosts.txt](docs/hosts.txt) to the hosts file. It points all the domains to the Proxmox WiFi address, which the group updates in that file on review day if the hotspot changed it.
-3. Open the URLs of section 15 with explicit `http://` and secure DNS disabled in the browser.
+2. Copy [docs/hosts.txt](docs/hosts.txt) into the hosts file (`/etc/hosts`, or `C:\Windows\System32\drivers\etc\hosts` as administrator, then `ipconfig /flushdns`).
+3. Open the URLs of section 12 with `http://` and with "secure DNS" disabled in the browser.
 
-Windows (PowerShell as administrator):
-
-```powershell
-notepad C:\Windows\System32\drivers\etc\hosts
-ipconfig /flushdns
-curl.exe http://api.grupo6.lab/health
-```
-
-Linux / macOS:
-
-```bash
-sudo tee -a /etc/hosts < docs/hosts.txt
-curl http://api.grupo6.lab/health
-psql "host=db.grupo6.lab port=5432 dbname=kubelab user=docente sslmode=disable" -c '\dt'
-```
-
-### 16.2 `docs/hosts.txt`
-
-```
-# Grupo 6 - KubeLab
-# Join the WiFi kubelab-grupo6 first. No routes needed (see docs/access.md)
-<IP_WIFI_PROXMOX>  app.grupo6.lab
-<IP_WIFI_PROXMOX>  api.grupo6.lab
-<IP_WIFI_PROXMOX>  db.grupo6.lab
-<IP_WIFI_PROXMOX>  grafana.grupo6.lab
-<IP_WIFI_PROXMOX>  prometheus.grupo6.lab
-<IP_WIFI_PROXMOX>  argocd.grupo6.lab
-```
-
-`<IP_WIFI_PROXMOX>` is replaced by the real address (`ip -br addr show <wifi_iface>` on the host) before the review.
-
-### 16.3 Read-only Users
-
-Credentials are delivered privately, never in this repository.
+**Read-only users (ACC-03).** Delivered privately, never in this repository:
 
 | System | User | Permission | Created by |
 |---|---|---|---|
-| PostgreSQL | `docente` | `SELECT` on schema `public` | Job `db-init` (section 9.3) |
-| Grafana | `docente` | Viewer | Job in `viewer-user-job.yaml` (section 13.4) |
-| Argo CD | `docente` | `role:readonly` | `argocd-cm` + `argocd-rbac-cm` (section 10.3) |
+| PostgreSQL | `docente` | `SELECT` on schema `public` | Migration `002_readonly_role.sql` (Job `db-init`) |
+| Grafana | `docente` | Viewer | Job `grafana-viewer-user` |
+| Argo CD | `docente` | `role:readonly` | `argocd-cm`, `argocd-rbac-cm` and section 5.11 |
 
-Argo CD password, set once with the `argocd` CLI v3.5.6 using the Doppler value `ARGOCD_READONLY_PASSWORD`:
+**Deviation from ACC-02 (VPN).** The assignment asks for ZeroTier or Tailscale. The group uses its own hotspot instead: the review is in person on the same WiFi, and the Proxmox host answers for the Traefik IP with proxy ARP, so the teacher reaches exactly the same services by domain without installing a client or creating an account. The team and the teacher never need routes to the VM network.
 
-```bash
-argocd login argocd.grupo6.lab --plaintext --username admin
-argocd account update-password --account docente --current-password "<admin>" --new-password "<ARGOCD_READONLY_PASSWORD>"
-```
+## 14. Design Decisions and Known Limitations
 
-![Access test from an external laptop](docs/teacher-access-test.png)
+| Topic | Decision |
+|---|---|
+| Hardware | The machine first used (6 GB RAM, 8 GB maximum) could not run host + 4 VMs + platform: without swap in the VMs, memory pressure caused thrashing and nodes stopped answering. On 2026-11-03 the project moved to a 24 GB machine and was **rebuilt from this repository** (no VM was copied), which also validated that the setup is reproducible |
+| Network | Routed bridge + proxy ARP (section 3.2). An earlier DNAT design was dropped because the zone file must point to the IP MetalLB assigns to Traefik |
+| Registry | Docker Hub public repositories: no `imagePullSecrets` in the cluster |
+| Private repository | Argo CD reads it with a read-only GitHub token delivered by Doppler, so the only manual Secret is still the Doppler token |
+| Storage | NFS on the Proxmox host with a dedicated thin volume: simple dynamic provisioning with one disk, data outside the VMs, `Retain` to keep data when a PVC is deleted |
+| Memory in Proxmox | With the balloon device, Proxmox shows the guest memory as total minus free, so the Linux page cache appears as used. Real usage is `kubectl top nodes` or Grafana |
 
-## 17. Evidence
+Known limitations, accepted for a single-host lab:
 
-### 17.1 Automatic Deployment (GitOps)
+- One control plane with the embedded SQLite datastore: if it stops, running workloads keep serving but no scheduling, scaling or Argo CD sync happens until it returns.
+- One physical host: high availability is between pods and VMs, not against a hardware failure.
+- NFS on the host is a single point of failure for the persistent volumes.
+- PostgreSQL runs one replica; the data is safe on the volume but the database is unavailable while its pod restarts.
+- The API connects with the database owner role; only the teacher role is read-only.
+- No TLS on the services and no authentication on Prometheus; access is limited to the group hotspot.
 
-Visible change in the web, PR and merge to `main`:
+## 15. Evidence
 
-```bash
-kubectl get applications -n argocd web
-kubectl rollout history deploy/web -n kubelab
-```
-
-Workflow `web` green, commit `ci(web): deploy image <short-sha>`, Argo CD `web` `Synced` on the new commit, change visible at http://app.grupo6.lab.
-
-![GitOps deployment](docs/gitops-deploy.png)
-
-### 17.2 Manifest-only Change
-
-Change `maxReplicas` in [k8s/apps/web/hpa.yaml](k8s/apps/web/hpa.yaml), PR and merge. No workflow runs; Argo CD applies the change.
-
-```bash
-kubectl get hpa web -n kubelab
-```
-
-![Manifest-only change](docs/gitops-manifest-only.png)
-
-### 17.3 selfHeal
-
-```bash
-kubectl delete ingressroute web -n kubelab
-kubectl get ingressroute -n kubelab -w
-```
-
-Argo CD recreates the IngressRoute.
-
-![Argo CD selfHeal](docs/argocd-selfheal.png)
-
-### 17.4 Pod Deletion without Downtime
-
-Commands in section 14.3.
-
-![Pod deletion with continuous traffic](docs/pod-deletion.png)
+| Evidence | Screenshot |
+|---|---|
+| Proxmox web UI and VMs | ![Proxmox web UI](docs/proxmox-web-ui.png) |
+| VM hardware | ![VM hardware](docs/proxmox-vm-hardware.png) |
+| VM cloud-init | ![VM cloud-init](docs/proxmox-vm-cloudinit.png) |
+| Host network: routes, proxy ARP and NAT | ![Host network](docs/proxmox-network.png) |
+| Proxy ARP seen from a hotspot client | ![Proxy ARP](docs/network-proxy-arp.png) |
+| k3s nodes | ![k3s nodes](docs/k3s-nodes.png) |
+| Team SSH and kubectl access | ![Team access](docs/team-ssh-access.png) |
+| Traefik LoadBalancer and MetalLB pool | ![Traefik LoadBalancer](docs/traefik-loadbalancer.png) |
+| Argo CD Applications | ![Argo CD Applications](docs/argocd-applications.png) |
+| DopplerSecrets and synced keys | ![DopplerSecrets](docs/doppler-secrets.png) |
+| GitHub Actions runs | ![GitHub Actions](docs/github-actions-runs.png) |
+| Docker Hub images with commit tags | ![Docker Hub](docs/dockerhub-images.png) |
+| `kubelab` resources | ![kubelab resources](docs/kubelab-resources.png) |
+| Web CRUD | ![Web CRUD](docs/browser-web-crud.png) |
+| API health | ![API health](docs/browser-api-health.png) |
+| Read-only database access | ![psql read-only](docs/psql-readonly.png) |
+| Prometheus targets | ![Prometheus targets](docs/prometheus-targets.png) |
+| Grafana data sources | ![Grafana data sources](docs/grafana-datasources.png) |
+| KubeLab dashboard: CPU and memory by node and by pod | ![KubeLab dashboard](docs/grafana-dashboard-1.png) |
+| KubeLab dashboard: replicas, API requests per second and logs | ![KubeLab dashboard logs](docs/grafana-dashboard-2.png) |
+| Promtail on all nodes | ![Promtail](docs/promtail-all-nodes.png) |
+| PVCs on `nfs-client` | ![PVCs](docs/pvcs-nfs.png) |
+| **Automatic scaling (HPA)**: k6 load and HPA from 2 to 4 replicas | ![HPA scaling](docs/hpa-scaling-1.png) |
+| **Automatic scaling (HPA)**: scaled API pods in Argo CD | ![HPA scaling in Argo CD](docs/hpa-scaling-2.png) |
+| Grafana during the load test | ![Grafana under load](docs/grafana-hpa-load.png) |
+| **Pod deletion without downtime** | ![Pod deletion](docs/pod-deletion.png) |
+| Data persistence after deleting `postgres-0` | ![Persistence](docs/postgres-persistence.png) |
+| Pull requests merged into `main` | ![Pull requests](docs/github-pull-requests.png) |
+| **Automatic deployment (GitOps)**: pipeline | ![GitOps deployment pipeline](docs/gitops-deploy-ci.png) |
+| **Automatic deployment (GitOps)**: new revision and image tag | ![GitOps deployment rollout](docs/gitops-deploy-rollout-2.png) |
+| **Automatic deployment (GitOps)**: change live, bot commit and Docker Hub push | ![GitOps deployment result](docs/gitops-deploy-web.png) |
+| Manifest-only change: Argo CD syncs the merged PR and scales the API | ![Manifest-only change in Argo CD](docs/gitops-deploy-rollout-1.png) |
+| Manifest-only change: HPA minimum applied, no image built | ![Manifest-only change](docs/gitops-manifest-only.png) |
+| Manifest-only change: no workflow run | ![No workflow run](docs/gitops-manifest-only-actions.png) |
+| Argo CD selfHeal | ![selfHeal](docs/argocd-selfheal.png) |
+| Access test from an external laptop | ![Teacher access](docs/teacher-access-test.png) |
