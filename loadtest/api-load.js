@@ -1,7 +1,7 @@
 // k6 load test for the HPA demo: pushes the api above 60 % CPU so it scales from 2 towards 6 replicas.
 //
-// Run with Docker (replace <TRAEFIK_IP> with the Traefik LoadBalancer IP):
-//   docker run --rm -i --add-host api.grupo6.lab:<TRAEFIK_IP> grafana/k6:1.8.2 run - < loadtest/api-load.js
+// Run with Docker (10.60.129.240 is the Traefik LoadBalancer IP):
+//   docker run --rm -i --add-host api.grupo6.lab:10.60.129.240 grafana/k6:1.8.2 run - < loadtest/api-load.js
 //
 // Watch the scaling in another terminal:
 //   kubectl get hpa api -n kubelab -w

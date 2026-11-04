@@ -2,8 +2,6 @@
 
 This guide is all you need to review the project. You only consume services: no VPN, no SSH, no `kubectl` and no network routes are required.
 
-<!-- TODO (hotspot switch): replace every <TRAEFIK_IP> with the final Traefik LoadBalancer IP. -->
-
 ## 1. What You Will Review
 
 | Service | What it is |
@@ -27,12 +25,12 @@ The `*.grupo6.lab` domains do not exist on the internet. The hosts file tells yo
 Lines to add (also in [hosts.txt](hosts.txt)):
 
 ```
-<TRAEFIK_IP>  app.grupo6.lab
-<TRAEFIK_IP>  api.grupo6.lab
-<TRAEFIK_IP>  db.grupo6.lab
-<TRAEFIK_IP>  grafana.grupo6.lab
-<TRAEFIK_IP>  prometheus.grupo6.lab
-<TRAEFIK_IP>  argocd.grupo6.lab
+10.60.129.240  app.grupo6.lab
+10.60.129.240  api.grupo6.lab
+10.60.129.240  db.grupo6.lab
+10.60.129.240  grafana.grupo6.lab
+10.60.129.240  prometheus.grupo6.lab
+10.60.129.240  argocd.grupo6.lab
 ```
 
 ### Windows
@@ -117,15 +115,15 @@ An `INSERT` with this user fails with `permission denied`, as expected.
 
 ```
 Your laptop (hotspot client)
-   | http://app.grupo6.lab  ->  hosts file  ->  <TRAEFIK_IP>
+   | http://app.grupo6.lab  ->  hosts file  ->  10.60.129.240
    v
 Phone hotspot kubelab-grupo6
    |
    v
-Proxmox host (WiFi)  answers ARP for <TRAEFIK_IP> (proxy ARP) and routes it to vmbr0
+Proxmox host (WiFi)  answers ARP for 10.60.129.240 (proxy ARP) and routes it to vmbr0
    |
    v
-vmbr0 10.10.10.0/24  ->  MetalLB (L2) announces <TRAEFIK_IP> from a worker node
+vmbr0 10.10.10.0/24  ->  MetalLB (L2) announces 10.60.129.240 from a worker node
    |
    v
 Traefik  ->  chooses the service by domain (IngressRoute) or port 5432 (IngressRouteTCP)
@@ -151,7 +149,7 @@ The assignment asks for access through a VPN (ZeroTier or Tailscale). The group 
 |---|---|
 | The browser opens a search page or "site can't be reached" | Type `http://` explicitly. Disable "Secure DNS" / "DNS over HTTPS" in the browser: it ignores the hosts file |
 | Names do not resolve after editing hosts | Windows: `ipconfig /flushdns`. Check that the file was saved as administrator and has no `.txt` extension |
-| Nothing answers | Check that you are connected to `kubelab-grupo6`, then `ping <TRAEFIK_IP>` |
+| Nothing answers | Check that you are connected to `kubelab-grupo6`, then `ping 10.60.129.240` |
 | HTTP 404 from Traefik | The domain is misspelled in the URL or missing in the hosts file |
 | Grafana or Argo CD reject the login | Use the user `docente` with the password delivered by the group |
 | `psql` connection refused | Use port `5432` and `sslmode=disable` |
