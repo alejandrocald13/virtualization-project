@@ -49,13 +49,14 @@ startupProbe:
   periodSeconds: 10
   failureThreshold: 60
 
-# Grafana was OOMKilled at 256Mi during the k6 load test (dashboard refreshing under load).
+# Measured under the k6 load test: with the dashboard open the working set reached the 512Mi
+# limit (log panels plus the SQLite page cache on NFS) and the health check started to time out.
 resources:
   requests:
     cpu: 50m
-    memory: 192Mi
+    memory: 256Mi
   limits:
-    memory: 512Mi
+    memory: 1Gi
 
 datasources:
   datasources.yaml:
