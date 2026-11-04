@@ -264,7 +264,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by (route, status_code) (rate(http_requests_total{namespace=\"kubelab\", app=\"api\"}[1m]))",
+          "expr": "sum by (route, status_code) (rate(http_requests_total{namespace=\"kubelab\", app=\"api\"}[5m]))",
           "legendFormat": "{{route}} {{status_code}}"
         }
       ]

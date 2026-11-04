@@ -49,12 +49,13 @@ startupProbe:
   periodSeconds: 10
   failureThreshold: 60
 
+# Grafana was OOMKilled at 256Mi during the k6 load test (dashboard refreshing under load).
 resources:
   requests:
     cpu: 50m
-    memory: 96Mi
+    memory: 192Mi
   limits:
-    memory: 256Mi
+    memory: 512Mi
 
 datasources:
   datasources.yaml:
