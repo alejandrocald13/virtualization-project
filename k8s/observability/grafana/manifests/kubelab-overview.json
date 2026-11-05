@@ -330,6 +330,73 @@
           "maxLines": 100
         }
       ]
+    },
+    {
+      "id": 9,
+      "type": "table",
+      "title": "Running pods by node",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 33,
+        "w": 24,
+        "h": 12
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "filterable": true
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true,
+        "sortBy": [
+          {
+            "displayName": "Node",
+            "desc": false
+          }
+        ]
+      },
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "Value": true,
+              "Value #A": true
+            },
+            "indexByName": {
+              "node": 0,
+              "namespace": 1,
+              "pod": 2
+            },
+            "renameByName": {
+              "node": "Node",
+              "namespace": "Namespace",
+              "pod": "Pod"
+            }
+          }
+        }
+      ],
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (node, namespace, pod) (kube_pod_info) * on (namespace, pod) group_left() sum by (namespace, pod) (kube_pod_status_phase{phase=\"Running\"}) > 0",
+          "format": "table",
+          "instant": true,
+          "range": false
+        }
+      ]
     }
   ]
 }
