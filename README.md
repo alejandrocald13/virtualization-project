@@ -507,7 +507,7 @@ Entity: `products` (inventory). Node.js 24, ESM, pnpm.
 
 ### 7.2 Web (`apps/web`, APP-02)
 
-React (Vite) client that lists, creates, edits and deletes products through relative calls to `/api/products`. In the cluster, nginx serves the static build and proxies `/api/` to the internal Service `api.kubelab.svc.cluster.local:3000`, so the browser only talks to `app.grupo6.lab` (no CORS). The Service name is resolved at request time (`resolver` plus a variable), so a recreated Service with a new ClusterIP keeps working without restarting nginx. Tests: `pnpm test` (Vitest, API client with a mocked `fetch`).
+React (Vite) client that lists, creates, edits and deletes products through relative calls to `/api/products`. In the cluster, nginx serves the static build and proxies `/api/` to the internal Service `api.kubelab.svc.cluster.local:3000`, so the browser only talks to `app.grupo6.lab` (no CORS). The Service name is re-resolved in the background (`upstream` with `server ... resolve`), so a recreated Service with a new ClusterIP keeps working without restarting nginx, and the last known address stays in use if the cluster DNS fails. Tests: `pnpm test` (Vitest, API client with a mocked `fetch`).
 
 ### 7.3 Database (`k8s/apps/database`, APP-03, APP-07, PER-03)
 
