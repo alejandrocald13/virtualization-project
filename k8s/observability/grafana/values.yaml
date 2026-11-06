@@ -40,6 +40,17 @@ affinity:
                   - prometheus
                   - argocd-application-controller
 
+# One replica: with the default 300 s, a dead node would leave Grafana down for 5 minutes.
+tolerations:
+  - key: node.kubernetes.io/not-ready
+    operator: Exists
+    effect: NoExecute
+    tolerationSeconds: 30
+  - key: node.kubernetes.io/unreachable
+    operator: Exists
+    effect: NoExecute
+    tolerationSeconds: 30
+
 # The first start runs hundreds of database migrations on SQLite over NFS
 # (several minutes). The liveness probe only starts once this one passes.
 startupProbe:

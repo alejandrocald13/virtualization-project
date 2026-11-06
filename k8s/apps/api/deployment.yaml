@@ -35,6 +35,16 @@ spec:
           labelSelector:
             matchLabels:
               app: api
+      # Default is 300 s: with a dead node, the app would run on one replica for 5 minutes.
+      tolerations:
+        - key: node.kubernetes.io/not-ready
+          operator: Exists
+          effect: NoExecute
+          tolerationSeconds: 30
+        - key: node.kubernetes.io/unreachable
+          operator: Exists
+          effect: NoExecute
+          tolerationSeconds: 30
       # The image declares USER node by name; the kubelet can only verify
       # runAsNonRoot with a numeric id (node is uid 1000 in the official image).
       securityContext:
@@ -49,6 +59,12 @@ spec:
           envFrom:
             - secretRef:
                 name: api-credentials
+          # Keep serving for a moment after the pod is marked for deletion, while Traefik
+          # stops sending it requests. SIGTERM arrives after this sleep.
+          lifecycle:
+            preStop:
+              sleep:
+                seconds: 5
           readinessProbe:
             httpGet:
               path: /health
