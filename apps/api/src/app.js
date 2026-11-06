@@ -22,7 +22,7 @@ export function createApp({ productsRepository, checkDatabase, metrics = createM
   app.use(express.json());
 
   app.get('/health/live', (request, response) => {
-    response.json({ status: 'ok' });
+    response.json({ status: 'okas' });
   });
 
   app.get('/health', async (request, response) => {
