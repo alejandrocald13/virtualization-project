@@ -67,7 +67,7 @@ Always type `http://` explicitly (there is no HTTPS).
 | http://api.grupo6.lab/api/products | API | JSON list of products |
 | http://api.grupo6.lab/metrics | API | Prometheus metrics, including `http_requests_total` by route |
 | `db.grupo6.lab:5432` | PostgreSQL | Database `kubelab` with the `products` table (read-only user) |
-| http://grafana.grupo6.lab | Grafana | Folder `KubeLab`, dashboard **KubeLab Overview**; Explore with the Loki data source for logs |
+| http://grafana.grupo6.lab | Grafana | Folder `KubeLab`, dashboard **KubeLab Overview**, including the log panels |
 | http://prometheus.grupo6.lab | Prometheus | Status > Targets: all jobs UP, including `kubernetes-pods` with the 2 API pods |
 | http://argocd.grupo6.lab | Argo CD | Application `root` and all child Applications `Synced` and `Healthy` |
 
@@ -135,9 +135,9 @@ web / api / postgres / grafana / prometheus / argocd
 - The 4 VMs (1 control plane, 3 workers) live on the internal network `10.10.10.0/24` behind the Proxmox host.
 - MetalLB gives Traefik a fixed IP inside the hotspot network, and the Proxmox host answers for that IP on the WiFi (proxy ARP). For your laptop it looks like any other device on the same network, so no routes are needed.
 
-## 8. Deviation from the Assignment
+## 8. Network Access (ACC-02)
 
-The assignment asks for access through a VPN (ZeroTier or Tailscale). The group uses the group hotspot instead:
+ACC-02 asks for access through the student's local network, with the hosts file pointing to the IP exposed by Traefik. The group hotspot provides this. Section 3 and the rubric of the assignment also mention a VPN, so the choice is stated here: no VPN is used.
 
 - The review happens in person, on the same WiFi, so a VPN adds an account and a client to install without changing what you can test.
 - You reach exactly the same services, with the same read-only users, and never touch the VMs.
@@ -149,7 +149,7 @@ The assignment asks for access through a VPN (ZeroTier or Tailscale). The group 
 |---|---|
 | The browser opens a search page or "site can't be reached" | Type `http://` explicitly. Disable "Secure DNS" / "DNS over HTTPS" in the browser: it ignores the hosts file |
 | Names do not resolve after editing hosts | Windows: `ipconfig /flushdns`. Check that the file was saved as administrator and has no `.txt` extension |
-| Nothing answers | Check that you are connected to `kubelab-grupo6`, then `ping 10.60.129.240` |
+| Nothing answers | Check that you are connected to `kubelab-grupo6`, then run `curl http://api.grupo6.lab/health`. Do not use `ping`: the Traefik IP only answers on ports 80 and 5432 |
 | HTTP 404 from Traefik | The domain is misspelled in the URL or missing in the hosts file |
 | Grafana or Argo CD reject the login | Use the user `docente` with the password delivered by the group |
 | `psql` connection refused | Use port `5432` and `sslmode=disable` |
