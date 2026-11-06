@@ -453,7 +453,7 @@ The admin password is in the Secret `argocd-initial-admin-secret` and is never s
 |---|---|---|
 | Namespaces | [k8s/platform/namespaces](k8s/platform/namespaces) | `kubelab` and `monitoring`, created first so Doppler can write Secrets into them |
 | MetalLB (NET-01) | [metallb/values.yaml](k8s/platform/metallb/values.yaml), [metallb-config](k8s/platform/metallb-config) | L2 mode, FRR disabled, speakers only on workers. `IPAddressPool kubelab-pool` `10.60.129.240-10.60.129.243` (`autoAssign: false`) and `L2Advertisement kubelab-l2` |
-| Traefik (NET-02 to NET-04) | [traefik/values.yaml](k8s/platform/traefik/values.yaml) | 2 replicas, Service `LoadBalancer` with `metallb.io/loadBalancerIPs: 10.60.129.240`, entrypoints `web` (80) and `postgres` (5432), only the CRD provider (IngressRoute), access log on, HTTPS entrypoint not exposed |
+| Traefik (NET-02 to NET-04) | [traefik/values.yaml](k8s/platform/traefik/values.yaml) | 2 replicas with a `PodDisruptionBudget` (`minAvailable: 1`), spread by node (`ScheduleAnyway`) and `tolerationSeconds: 30`, Service `LoadBalancer` with `metallb.io/loadBalancerIPs: 10.60.129.240`, entrypoints `web` (80) and `postgres` (5432), only the CRD provider (IngressRoute), access log on, HTTPS entrypoint not exposed |
 | NFS provisioner (PER-01) | [nfs-provisioner/values.yaml](k8s/platform/nfs-provisioner/values.yaml) | Server `10.10.10.1:/srv/nfs/kubelab`, StorageClass `nfs-client` (**default**), `reclaimPolicy: Retain`, `archiveOnDelete: true`, folders `<namespace>-<pvc>` |
 | metrics-server (HA-04) | [metrics-server/values.yaml](k8s/platform/metrics-server/values.yaml) | `--kubelet-insecure-tls` (k3s kubelet certificates are self-signed) |
 | Doppler Operator (SEC-02) | [doppler-operator.yaml](k8s/argocd/apps/doppler-operator.yaml), [doppler-secrets](k8s/platform/doppler-secrets) | Public chart 1.7.5; 4 `DopplerSecret` resources (section 9) |
@@ -501,12 +501,13 @@ Entity: `products` (inventory). Node.js 24, ESM, pnpm.
 
 - One JSON log line per request to stdout (collected by Promtail); probes and `/metrics` are not logged.
 - `DATABASE_URL` comes from the Secret `api-credentials` (Doppler).
+- The database client uses a 3 s connection timeout, a 5 s query timeout and TCP keepalive: if PostgreSQL stops answering, requests fail fast instead of hanging, and the API recovers when it returns.
 - On `SIGTERM` it stops accepting connections, finishes in-flight requests and closes the database pool (clean rolling updates).
 - Tests: `pnpm test` runs unit tests with an in-memory repository (CRUD, validation, health, metrics) and an integration test against PostgreSQL when `DATABASE_URL` is set (always in CI).
 
 ### 7.2 Web (`apps/web`, APP-02)
 
-React (Vite) client that lists, creates, edits and deletes products through relative calls to `/api/products`. In the cluster, nginx serves the static build and proxies `/api/` to the internal Service `api.kubelab.svc.cluster.local:3000`, so the browser only talks to `app.grupo6.lab` (no CORS). Tests: `pnpm test` (Vitest, API client with a mocked `fetch`).
+React (Vite) client that lists, creates, edits and deletes products through relative calls to `/api/products`. In the cluster, nginx serves the static build and proxies `/api/` to the internal Service `api.kubelab.svc.cluster.local:3000`, so the browser only talks to `app.grupo6.lab` (no CORS). The Service name is resolved at request time (`resolver` plus a variable), so a recreated Service with a new ClusterIP keeps working without restarting nginx. Tests: `pnpm test` (Vitest, API client with a mocked `fetch`).
 
 ### 7.3 Database (`k8s/apps/database`, APP-03, APP-07, PER-03)
 
@@ -527,6 +528,8 @@ React (Vite) client that lists, creates, edits and deletes products through rela
 | `replicas` field | Not set: the HPA owns it (otherwise selfHeal would reset it on every scale) | Not set |
 | Strategy | `RollingUpdate`, `maxUnavailable: 0`, `maxSurge: 1` | Same |
 | Spread | `topologySpreadConstraints` by node (`ScheduleAnyway`) | Same |
+| Pod shutdown | `preStop` sleep of 5 s, so Traefik stops sending requests before SIGTERM | Same |
+| Node failure | `tolerationSeconds: 30` for `not-ready` and `unreachable` (default is 300 s) | Same |
 | Security | `runAsNonRoot`, `runAsUser: 1000` | `runAsNonRoot`, `runAsUser: 101` |
 | Readiness / liveness | `GET /health` (3 s initial delay) / `GET /health/live` | `GET /healthz` / `GET /healthz` |
 | Requests / limits | `100m`, `128Mi` / `500m`, `256Mi` | `50m`, `16Mi` / `250m`, `64Mi` |
@@ -574,7 +577,7 @@ Installed from [k8s/argocd/install](k8s/argocd/install): pinned `install.yaml` v
 | 0 | `grafana` | chart 13.7.0 + values + `k8s/observability/grafana/manifests` | `monitoring` |
 | 0 | `observability-routes` | `k8s/observability/routes` | `monitoring` |
 | 1 | `api` | `k8s/apps/api` | `kubelab` |
-| 2 | `web` | `k8s/apps/web` (after the API: nginx resolves the `api` Service at start) | `kubelab` |
+| 2 | `web` | `k8s/apps/web` (after the API, which it proxies) | `kubelab` |
 
 Charts with values from this repository use multiple sources: the Helm chart plus this repository as `$values`.
 
@@ -644,6 +647,7 @@ Dashboard **KubeLab Overview** (OBS-04), [kubelab-overview.json](k8s/observabili
 | HPA current replicas | `kube_horizontalpodautoscaler_status_current_replicas` |
 | API requests per second | `sum by (route, status_code) (rate(http_requests_total{namespace="kubelab", app="api"}[5m]))` |
 | Logs | Loki: `kubelab` applications and Traefik |
+| Ready pods by node | Table from `kube_pod_info` and `kube_pod_status_ready`, filterable by column |
 
 ```bash
 kubectl get pods -n monitoring -o wide
@@ -654,7 +658,7 @@ kubectl get pvc -A
 
 ### 11.1 HPA and PDB (HA-04)
 
-[k8s/apps/api/hpa.yaml](k8s/apps/api/hpa.yaml): `autoscaling/v2`, 2 to 6 replicas, 60 % average CPU utilization (relative to the 100m request), scale-down stabilization of 60 s. The web uses the same values. [pdb.yaml](k8s/apps/api/pdb.yaml): `minAvailable: 1`. Traefik runs 2 replicas.
+[k8s/apps/api/hpa.yaml](k8s/apps/api/hpa.yaml): `autoscaling/v2`, 2 to 6 replicas, 60 % average CPU utilization (relative to the 100m request), scale-down stabilization of 60 s. The web uses the same values. [pdb.yaml](k8s/apps/api/pdb.yaml): `minAvailable: 1`. Traefik runs 2 replicas with its own PDB.
 
 ### 11.2 Load Test (HA-05)
 
@@ -665,7 +669,7 @@ docker run --rm -i --add-host api.grupo6.lab:10.60.129.240 grafana/k6:1.8.2 run 
 kubectl get hpa api -n kubelab -w          # in another terminal
 ```
 
-Result on 2026-11-03: the API scaled 2 -> 3 -> 5 replicas and back to 2 after the test; about 112 000 requests, all `200`, p95 5 ms measured by the API.
+Result on 2026-11-03: the API scaled up under load and back down after the test. The run in [hpa-scaling-1.png](docs/hpa-scaling-1.png) went 2 -> 3 -> 4 replicas; the peak changes between runs (up to 6 in the Prometheus history). One run reached 5 replicas with about 112 000 requests, all `200`, p95 5 ms measured by the API.
 
 ### 11.3 Pod Deletion and Persistence (PER-02)
 
@@ -703,7 +707,7 @@ Add [docs/hosts.txt](docs/hosts.txt) to the hosts file and always use `http://`.
 | http://api.grupo6.lab/api/products | API | JSON list of products |
 | http://api.grupo6.lab/metrics | API | Prometheus metrics, including `http_requests_total` by route |
 | `db.grupo6.lab:5432` | PostgreSQL (IngressRouteTCP) | `psql "host=db.grupo6.lab port=5432 dbname=kubelab user=docente sslmode=disable" -c '\dt'` lists the `products` table |
-| http://grafana.grupo6.lab | Grafana | Login as `docente` (Viewer): data sources Prometheus and Loki, folder `KubeLab` with the KubeLab Overview dashboard |
+| http://grafana.grupo6.lab | Grafana | Login as `docente` (Viewer): folder `KubeLab` with the KubeLab Overview dashboard, with panels from Prometheus and Loki |
 | http://prometheus.grupo6.lab | Prometheus | Status > Targets: all jobs `UP`, including `kubernetes-pods` with the API pods |
 | http://argocd.grupo6.lab | Argo CD | Login as `docente` (read-only): `root` and all child Applications `Synced` and `Healthy` |
 
@@ -723,7 +727,7 @@ Full guide: [docs/access.md](docs/access.md).
 | Grafana | `docente` | Viewer | Job `grafana-viewer-user` |
 | Argo CD | `docente` | `role:readonly` | `argocd-cm`, `argocd-rbac-cm` and section 5.11 |
 
-**Deviation from ACC-02 (VPN).** The assignment asks for ZeroTier or Tailscale. The group uses its own hotspot instead: the review is in person on the same WiFi, and the Proxmox host answers for the Traefik IP with proxy ARP, so the teacher reaches exactly the same services by domain without installing a client or creating an account. The team and the teacher never need routes to the VM network.
+**Network access (ACC-02).** ACC-02 asks for the teacher to join the student's local network and use the hosts file to reach the IP exposed by Traefik; this is what the group hotspot provides. Section 3 and the rubric of the assignment also mention a VPN, so the choice is stated here: no VPN is used. The review is in person on the same WiFi, and the Proxmox host answers for the Traefik IP with proxy ARP, so the teacher reaches the services by domain without installing a client or creating an account. The team and the teacher never need routes to the VM network.
 
 ## 14. Design Decisions and Known Limitations
 
@@ -738,12 +742,16 @@ Full guide: [docs/access.md](docs/access.md).
 
 Known limitations, accepted for a single-host lab:
 
-- One control plane with the embedded SQLite datastore: if it stops, running workloads keep serving but no scheduling, scaling or Argo CD sync happens until it returns.
+- One control plane with the embedded SQLite datastore: if it stops, no scheduling, scaling or Argo CD sync happens until it returns. CoreDNS also runs one replica, usually on that node, so name resolution can fail during the outage even if running pods stay up.
 - One physical host: high availability is between pods and VMs, not against a hardware failure.
-- NFS on the host is a single point of failure for the persistent volumes.
+- NFS on the host is a single point of failure for the persistent volumes, and the database has no backups.
+- The cluster is designed to lose one worker, not two: one worker cannot reliably hold the whole workload without swap.
 - PostgreSQL runs one replica; the data is safe on the volume but the database is unavailable while its pod restarts.
+- If the worker running `postgres-0` dies, Kubernetes does not recreate the pod by itself: it cannot confirm that the old pod stopped, and NFS would not prevent two writers. After confirming in Proxmox that the VM is off, an operator sets the taint `node.kubernetes.io/out-of-service` on the node. The same applies to `loki-0` and `argocd-application-controller-0`.
+- Argo CD, Grafana, Prometheus and other platform components run one replica, so they have a short outage when their pod or node is lost.
+- There is no alerting: Alertmanager is disabled.
 - The API connects with the database owner role; only the teacher role is read-only.
-- No TLS on the services and no authentication on Prometheus; access is limited to the group hotspot.
+- No TLS on the services and no authentication on the API or Prometheus; access is limited to the group hotspot.
 
 ## 15. Evidence
 
