@@ -9,4 +9,4 @@ resources:
 images:
 - name: docker.io/alejandrocald13/kubelab-api
   newName: docker.io/alejandrocald13/kubelab-api
-  newTag: de44ee1
+  newTag: "6901935"
