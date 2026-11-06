@@ -1,5 +1,28 @@
 deployment:
   replicas: 2
+# Every request enters through Traefik: a drain must leave one replica running.
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+# Prefer different nodes so losing one worker does not take both replicas.
+# ScheduleAnyway: with a node down, a replica on a shared node beats no replica.
+topologySpreadConstraints:
+  - maxSkew: 1
+    topologyKey: kubernetes.io/hostname
+    whenUnsatisfiable: ScheduleAnyway
+    labelSelector:
+      matchLabels:
+        app.kubernetes.io/name: traefik
+# Default is 300 s: with a dead node, Traefik would run on one replica for 5 minutes.
+tolerations:
+  - key: node.kubernetes.io/not-ready
+    operator: Exists
+    effect: NoExecute
+    tolerationSeconds: 30
+  - key: node.kubernetes.io/unreachable
+    operator: Exists
+    effect: NoExecute
+    tolerationSeconds: 30
 service:
   type: LoadBalancer
   annotations:
