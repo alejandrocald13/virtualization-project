@@ -10,6 +10,16 @@ configmapReload:
 server:
   # About 170 MB of TSDB per day: 7 days fit in the 4Gi volume.
   retention: "7d"
+  # One replica: with the default 300 s, a dead node would leave Prometheus down for 5 minutes.
+  tolerations:
+    - key: node.kubernetes.io/not-ready
+      operator: Exists
+      effect: NoExecute
+      tolerationSeconds: 30
+    - key: node.kubernetes.io/unreachable
+      operator: Exists
+      effect: NoExecute
+      tolerationSeconds: 30
   persistentVolume:
     enabled: true
     size: 4Gi

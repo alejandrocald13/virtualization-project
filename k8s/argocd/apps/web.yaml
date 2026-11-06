@@ -4,7 +4,7 @@ metadata:
   name: web
   namespace: argocd
   annotations:
-    # After the api: nginx resolves the api Service name when it starts.
+    # After the api, which the web proxies requests to.
     argocd.argoproj.io/sync-wave: "2"
 spec:
   project: default
